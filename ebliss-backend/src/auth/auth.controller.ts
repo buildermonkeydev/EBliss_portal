@@ -104,7 +104,7 @@ async googleCallback(@Query('code') code: string, @Req() req: Request, @Res() re
     const result = await this.authService.handleGoogleCallback(code, ipAddress, userAgent);
     
     // Redirect to frontend with tokens
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL ;
     const redirectUrl = `${frontendUrl}/auth/callback?` + 
       `access_token=${result.access_token}&` +
       `refresh_token=${result.refresh_token}&` +
@@ -114,7 +114,7 @@ async googleCallback(@Query('code') code: string, @Req() req: Request, @Res() re
     return res.redirect(redirectUrl);
   } catch (error) {
     // Redirect to frontend with error
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL ;
     return res.redirect(`${frontendUrl}/auth/error?message=${encodeURIComponent(error.message)}`);
   }
 }
@@ -128,7 +128,7 @@ async githubCallback(@Query('code') code: string, @Req() req: Request, @Res() re
     const result = await this.authService.handleGithubCallback(code, ipAddress, userAgent);
     
     // Redirect to frontend with tokens
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL ;
     const redirectUrl = `${frontendUrl}/auth/callback?` + 
       `access_token=${result.access_token}&` +
       `refresh_token=${result.refresh_token}&` +
@@ -137,7 +137,7 @@ async githubCallback(@Query('code') code: string, @Req() req: Request, @Res() re
     
     return res.redirect(redirectUrl);
   } catch (error) {
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const frontendUrl = process.env.FRONTEND_URL ;
     return res.redirect(`${frontendUrl}/auth/error?message=${encodeURIComponent(error.message)}`);
   }
 }
