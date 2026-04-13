@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VNC Test - Full Authentication</title>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; padding: 20px; }
+        #log { height: 300px; overflow: auto; background: #111; padding: 10px; margin-top: 20px; }
+        canvas { border: 1px solid #333; background: #000; }
+        .info { color: #0f0; }
+        .error { color: #f00; }
+        .data { color: #ff0; }
+        .success { color: #0f0; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h2>VNC Protocol Test - Full Authentication</h2>
+    <canvas id="canvas" width="800" height="600"></canvas>
+    <div id="log"></div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const host = urlParams.get('host') || 'localhost';
+        const port = urlParams.get('port') || '3000';
+        let path = urlParams.get('path') || '';
+        const password = urlParams.get('password') || '';
+        
+        if (path.startsWith('/')) path = path.substring(1);
+        
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const logDiv = document.getElementById('log');
+        
+        function log(msg, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = type;
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            logDiv.appendChild(entry);
+            entry.scrollIntoView();
+            console.log(msg);
+        }
+        
+        // Simple DES encryption for VNC password (VNC uses DES with null padding)
+        function encryptVncPassword(password) {
+            // VNC password is max 8 characters, padded with nulls
+            const padded = new Uint8Array(8);
+            for (let i = 0; i < Math.min(password.length, 8); i++) {
+                padded[i] = password.charCodeAt(i);
+            }
+            // For simplicity, we'll just return the padded password
+            // Real VNC uses DES, but Proxmox might accept plain text
+            return padded;
+        }
+        
+        async function connect() {
+            try {
+                const wsUrl = `ws://${host}:${port}/${path}`;
+                log(`Connecting to: ${wsUrl}`);
+                
+                const ws = new WebSocket(wsUrl);
+                let step = 0;
+                let securityType = null;
+                
+                ws.onopen = () => {
+                    log('✅ WebSocket opened', 'success');
+                    // Step 1: Send VNC protocol version
+                    const versionMsg = 'RFB 003.008\n';
+                    log(`📤 [1] Sending VNC version: ${versionMsg.trim()}`);
+                    ws.send(versionMsg);
+                    step = 1;
+                };
+                
+                ws.onmessage = (event) => {
+                    const data = event.data;
+                    if (typeof data === 'string') {
+                        log(`📥 Received text: ${data}`, 'data');
+                        
+                        if (step === 1 && data.includes('RFB')) {
+                            log('✅ [2] VNC server recognized version', 'success');
+                            // Step 3: Send security type (1 = None, 2 = VNC Auth)
+                            // Try VNC Authentication first
+                            securityType = 2;
+                            const securityMsg = new Uint8Array([securityType]);
+                            log(`📤 [3] Requesting VNC authentication (type ${securityType})`);
+                            ws.send(securityMsg);
+                            step = 2;
+                        }
+                        else if (step === 3 && data === '') {
+                            log('✅ [6] Security result: Success', 'success');
+                            // Step 7: Send client initialization (shared flag = 1)
+                            const initMsg = new Uint8Array([1]);
+                            log(`📤 [7] Client initialization (shared mode)`);
+                            ws.send(initMsg);
+                            step = 4;
+                        }
+                        else if (step === 4) {
+                            log(`📥 Server message: ${data}`, 'data');
+                        }
+                    } else {
+                        const buffer = new Uint8Array(data);
+                        log(`📥 Received binary: ${buffer.length} bytes`, 'data');
+                        if (buffer.length > 0) {
+                            log(`   First 16 bytes: ${Array.from(buffer.slice(0, 16)).join(',')}`, 'data');
+                        }
+                        
+                        if (step === 2 && buffer.length === 16) {
+                            // Step 4: Challenge from server (16 bytes)
+                            log(`📥 [4] Received authentication challenge (16 bytes)`, 'success');
+                            
+                            // Step 5: Send challenge response
+                            // For VNC authentication, we need to encrypt the challenge with DES
+                            // Since DES is complex, let's try sending the password directly first
+                            const passwordBytes = encryptVncPassword(password);
+                            log(`📤 [5] Sending challenge response (${passwordBytes.length} bytes)`);
+                            ws.send(passwordBytes);
+                            step = 3;
+                        }
+                        else if (step === 4 && buffer.length >= 16) {
+                            // Server initialization (framebuffer info)
+                            const width = (buffer[0] << 8) | buffer[1];
+                            const height = (buffer[2] << 8) | buffer[3];
+                            log(`📥 [8] Server init: ${width}x${height}`, 'success');
+                            canvas.width = width;
+                            canvas.height = height;
+                            step = 5;
+                        }
+                        else if (step === 5 && buffer.length > 0) {
+                            // Framebuffer updates
+                            log(`📺 Framebuffer update received: ${buffer.length} bytes`, 'success');
+                            if (buffer.length > 12) {
+                                const x = (buffer[4] << 8) | buffer[5];
+                                const y = (buffer[6] << 8) | buffer[7];
+                                const w = (buffer[8] << 8) | buffer[9];
+                                const h = (buffer[10] << 8) | buffer[11];
+                                log(`   Update region: x=${x}, y=${y}, w=${w}, h=${h}`, 'success');
+                                
+                                // Draw pixels
+                                const imageData = ctx.createImageData(w, h);
+                                for (let i = 0; i < w * h && i < (buffer.length - 12) / 3; i++) {
+                                    const pixelIdx = 12 + i * 3;
+                                    imageData.data[i * 4] = buffer[pixelIdx];
+                                    imageData.data[i * 4 + 1] = buffer[pixelIdx + 1];
+                                    imageData.data[i * 4 + 2] = buffer[pixelIdx + 2];
+                                    imageData.data[i * 4 + 3] = 255;
+                                }
+                                ctx.putImageData(imageData, x, y);
+                                log(`   ✅ Drew ${w}x${h} pixels`, 'success');
+                            }
+                        }
+                    }
+                };
+                
+                ws.onerror = (err) => {
+                    log(`❌ WebSocket error: ${err}`, 'error');
+                };
+                
+                ws.onclose = () => {
+                    log('❌ WebSocket closed', 'error');
+                };
+                
+                // Request framebuffer updates every second
+                setInterval(() => {
+                    if (ws.readyState === WebSocket.OPEN && step >= 5) {
+                        // Request incremental framebuffer update
+                        const updateRequest = new Uint8Array([3, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+                        ws.send(updateRequest);
+                        log(`📤 Requested framebuffer update`, 'info');
+                    }
+                }, 1000);
+                
+            } catch (err) {
+                log(`❌ Error: ${err.message}`, 'error');
+            }
+        }
+        
+        connect();
+    </script>
+</body>
+</html>

@@ -1,0 +1,1473 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                Int       @id @default(autoincrement())
+  full_name         String
+  email             String    @unique
+  password_hash     String
+  role              String    @default("customer")
+  wallet_balance    Decimal   @default(0) @db.Decimal(10, 2)
+  verified          Boolean   @default(false)
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+  phone             String?
+  company           String?
+  tax_id            String? // GST Number / VAT Number
+  tax_rate          Float?
+  address           Json? // Billing address
+  state             String? // State/Province
+  city              String?
+  postal_code       String?
+  country           String?   @default("IN")
+  status            String    @default("active")
+  suspended_at      DateTime?
+  suspension_reason String?
+
+  // Security fields
+  refresh_tokens     RefreshToken[]
+  activityLogs       ActivityLog[]
+  ticketMessages     TicketMessage[]
+  provider           String? // 'google', 'github'
+  provider_id        String? // OAuth provider's user ID
+  email_verification EmailVerification?
+  password_reset     PasswordReset?
+  login_history      LoginHistory[]
+  mfa_secret         String?
+  mfa_enabled        Boolean             @default(false)
+  two_factor_secret  String?
+  two_factor_enabled Boolean             @default(false)
+  last_login_at      DateTime?
+  last_login_ip      String?
+  reviews            ProductReview[]
+  // Relationships
+  vms                VM[]
+  transactions       Transaction[]
+  invoices           Invoice[]
+  ssh_keys           SSHKey[]
+  tickets            Ticket[]
+  ip_addresses       IPAddress[]
+  dedicated_servers  DedicatedServer[]
+  colocations        Colocation[]
+  firewall_groups    FirewallGroup[]
+  payment_methods    UserPaymentMethod[]
+  payments           Payment[]
+  notification_logs  NotificationLog[]
+  vm_snapshots       VMSnapshot[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id         Int      @id @default(autoincrement())
+  token      String   @unique
+  user_id    Int
+  expires_at DateTime
+  created_at DateTime @default(now())
+  revoked    Boolean  @default(false)
+  ip_address String?
+  user_agent String?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+model Location {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  displayName     String?
+  country         String?
+  city            String?
+  flag            String?
+  latency         Int?
+  priceMultiplier Float    @default(1.0)
+  available       Boolean  @default(true)
+  features        String[]
+  metadata        Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("locations")
+}
+
+model EmailVerification {
+  id          Int       @id @default(autoincrement())
+  user_id     Int       @unique
+  token       String    @unique
+  expires_at  DateTime
+  created_at  DateTime  @default(now())
+  verified_at DateTime?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@map("email_verifications")
+}
+
+model PasswordReset {
+  id         Int       @id @default(autoincrement())
+  user_id    Int       @unique
+  token      String    @unique
+  expires_at DateTime
+  created_at DateTime  @default(now())
+  used_at    DateTime?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([token])
+  @@map("password_resets")
+}
+
+model LoginHistory {
+  id             Int      @id @default(autoincrement())
+  user_id        Int
+  ip_address     String?
+  user_agent     String?
+  location       String?
+  device_type    String?
+  success        Boolean
+  failure_reason String?
+  created_at     DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([created_at])
+  @@map("login_history")
+}
+
+// VMs table
+model VM {
+  id                Int            @id @default(autoincrement())
+  user_id           Int
+  node_id           Int
+  proxmox_vmid      Int
+  name              String
+  hostname          String
+  vcpu              Int
+  ram_gb            Int
+  ssd_gb            Int
+  plan_type         PlanType       @default(hourly)
+  status            VMStatus       @default(pending)
+  hourly_rate       Decimal        @db.Decimal(10, 4)
+  monthly_rate      Decimal?       @db.Decimal(10, 2)
+  ip_ids            Int[]          @default([])
+  firewall_group_id Int?
+  ssh_key_ids       Int[]          @default([])
+  cloud_init_data   Json?
+  created_at        DateTime       @default(now())
+  last_billed_at    DateTime       @default(now())
+  suspended_at      DateTime?
+  terminated_at     DateTime?
+  suspension_reason String?
+  user              User           @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  node              Node           @relation(fields: [node_id], references: [id])
+  firewall_group    FirewallGroup? @relation(fields: [firewall_group_id], references: [id])
+  ip_addresses      IPAddress[]
+  snapshots         VMSnapshot[]
+  vm_metrics        VMMetric[]
+  plan_id           Int?
+  plan              VMPlan?         @relation(fields: [plan_id], references: [id])
+  Plan              Plan?          @relation(fields: [planId], references: [id])
+  planId            Int?
+
+  @@map("vms")
+}
+
+model Plan {
+  id            Int      @id @default(autoincrement())
+  name          String
+  type          PlanType @default(hourly)
+  vcpu          Int
+  ram_gb        Int
+  ssd_gb        Int
+  bandwidth_gb  Int
+  hourly_price  Decimal? @db.Decimal(10, 4)
+  monthly_price Decimal? @db.Decimal(10, 2)
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now())
+
+  vms VM[]
+
+  @@map("plans")
+}
+
+// POPs (Points of Presence)
+model Pop {
+  id         Int      @id @default(autoincrement())
+  name       String
+  city       String
+  country    String
+  active     Boolean  @default(true)
+  created_at DateTime @default(now())
+
+  nodes        Node[]
+  ip_addresses IPAddress[]
+  ip_pools     IPPool[]
+
+  @@map("pops")
+}
+
+// Nodes (Proxmox Nodes)
+model Node {
+  id               Int        @id @default(autoincrement())
+  pop_id           Int
+  hostname         String
+  api_url          String
+  api_token_id     String
+  api_token_secret String
+  max_vcpu         Int
+  max_ram_gb       Int
+  max_storage_gb   Int
+  status           NodeStatus @default(active)
+  created_at       DateTime   @default(now())
+  ip_address       String? // Add this field
+
+  pop Pop  @relation(fields: [pop_id], references: [id])
+  vms VM[]
+
+  @@map("nodes")
+}
+
+// IP Address Pools
+model IPPool {
+  id         Int      @id @default(autoincrement())
+  pop_id     Int
+  name       String
+  subnet     String
+  gateway    String?
+  start_ip   String
+  end_ip     String
+  total_ips  Int
+  used_ips   Int      @default(0)
+  status     String   @default("active") // active, full, deprecated
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  pop          Pop         @relation(fields: [pop_id], references: [id])
+  ip_addresses IPAddress[]
+
+  @@unique([pop_id, subnet])
+  @@map("ip_pools")
+}
+
+model IPAddress {
+  id                  Int              @id @default(autoincrement())
+  address             String
+  subnet              String
+  gateway             String?
+  pool_id             Int?
+  pop_id              Int
+  user_id             Int?
+  vm_id               Int?
+  ptr_record          String?
+  status              IPStatus         @default(available)
+  created_at          DateTime         @default(now())
+  assigned_at         DateTime?
+  released_at         DateTime?
+  mac_address         String?
+  dedicated_server_id String?
+  pool                IPPool?          @relation(fields: [pool_id], references: [id])
+  pop                 Pop              @relation(fields: [pop_id], references: [id])
+  user                User?            @relation(fields: [user_id], references: [id])
+  vm                  VM?              @relation(fields: [vm_id], references: [id])
+  dedicated_server    DedicatedServer? @relation(fields: [dedicated_server_id], references: [id])
+  colocation_id       String?
+  colocation          Colocation?      @relation(fields: [colocation_id], references: [id])
+
+  @@unique([address, subnet])
+  @@map("ip_addresses")
+}
+
+// VM Snapshots
+model VMSnapshot {
+  id                    Int      @id @default(autoincrement())
+  vm_id                 Int
+  userId                Int
+  proxmox_snapshot_name String
+  name                  String
+  description           String?
+  created_at            DateTime @default(now())
+  size_gb               Float?
+
+  vm VM @relation(fields: [vm_id], references: [id], onDelete: Cascade)
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("vm_snapshots")
+}
+
+// VM Metrics (hourly)
+model VMMetric {
+  id               Int      @id @default(autoincrement())
+  vm_id            Int
+  cpu_usage        Float
+  memory_usage     Float
+  disk_usage       Float
+  bandwidth_in_mb  Float
+  bandwidth_out_mb Float
+  recorded_at      DateTime @default(now())
+
+  vm VM @relation(fields: [vm_id], references: [id], onDelete: Cascade)
+
+  @@unique([vm_id, recorded_at])
+  @@map("vm_metrics")
+}
+
+model Transaction {
+  id            Int     @id @default(autoincrement())
+  user_id       Int
+  amount        Decimal @db.Decimal(10, 4)
+  type          String // 'deposit', 'reservation', 'usage', 'refund'
+  status        String? // 'pending', 'completed', 'failed', 'refunded'
+  description   String
+  balance_after Decimal @db.Decimal(10, 2)
+
+  ref_id     String?
+  metadata   Json? // Additional data
+  created_at DateTime  @default(now())
+  updated_at DateTime? @updatedAt
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("transactions")
+}
+
+model Invoice {
+  id                   Int           @id @default(autoincrement())
+  user_id              Int
+  invoice_number       String        @unique
+  items_json           Json
+  subtotal             Decimal       @db.Decimal(10, 2)
+  tax_rate             Float?
+  tax_amount           Decimal       @db.Decimal(10, 2)
+  total                Decimal       @db.Decimal(10, 2)
+  status               InvoiceStatus @default(pending)
+  due_date             DateTime
+  pdf_url              String?
+  billing_period_start DateTime?
+  billing_period_end   DateTime?
+  created_at           DateTime      @default(now())
+  paid_at              DateTime?
+  metadata             Json?
+  user                 User          @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("invoices")
+}
+
+// SSH Keys
+model SSHKey {
+  id          Int      @id @default(autoincrement())
+  user_id     Int
+  label       String
+  public_key  String   @db.Text
+  fingerprint String   @unique
+  created_at  DateTime @default(now())
+  is_active   Boolean  @default(true)
+  user        User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@map("ssh_keys")
+}
+
+// Firewall Groups
+model FirewallGroup {
+  id             Int      @id @default(autoincrement())
+  user_id        Int
+  name           String
+  default_policy String   @default("drop")
+  rules_json     Json?
+  created_at     DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  vms  VM[]
+
+  @@map("firewall_groups")
+}
+
+model Ticket {
+  id                Int              @id @default(autoincrement())
+  ticket_number     String           @unique
+  user_id           Int
+  subject           String
+  department        TicketDepartment
+  priority          TicketPriority   @default(medium)
+  status            TicketStatus     @default(open)
+  description       String           @db.Text
+  assigned_to       Int? // Admin user ID
+  assigned_to_admin AdminUser?       @relation(fields: [assigned_to], references: [id])
+  last_reply_at     DateTime?
+  resolved_at       DateTime?
+  closed_at         DateTime?
+  created_at        DateTime         @default(now())
+  updated_at        DateTime         @updatedAt
+
+  // SLA Tracking
+  first_response_at DateTime?
+  response_due_at   DateTime?
+  resolution_due_at DateTime?
+  sla_breached      Boolean            @default(false)
+  attachments       TicketAttachment[]
+
+  user          User                 @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  messages      TicketMessage[]
+  internalNotes TicketInternalNote[]
+
+  @@index([user_id])
+  @@index([status])
+  @@index([department])
+  @@index([priority])
+  @@index([ticket_number])
+  @@map("tickets")
+}
+
+// Ticket Messages (Customer & Public)
+model TicketMessage {
+  id          Int      @id @default(autoincrement())
+  ticket_id   Int
+  user_id     Int? // Customer ID (if customer reply)
+  admin_id    Int? // Admin ID (if admin reply)
+  message     String   @db.Text
+  attachments Json? // Array of attachment URLs
+  is_internal Boolean  @default(false)
+  created_at  DateTime @default(now())
+
+  ticket Ticket     @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+  user   User?      @relation(fields: [user_id], references: [id])
+  admin  AdminUser? @relation(fields: [admin_id], references: [id])
+
+  @@index([ticket_id])
+  @@index([created_at])
+  @@map("ticket_messages")
+}
+
+// Internal Notes (Admin Only)
+model TicketInternalNote {
+  id         Int      @id @default(autoincrement())
+  ticket_id  Int
+  admin_id   Int
+  note       String   @db.Text
+  created_at DateTime @default(now())
+
+  ticket Ticket    @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+  admin  AdminUser @relation(fields: [admin_id], references: [id])
+
+  @@index([ticket_id])
+  @@map("ticket_internal_notes")
+}
+
+// Ticket Attachments
+model TicketAttachment {
+  id               Int      @id @default(autoincrement())
+  ticket_id        Int
+  message_id       Int? // Associated message ID (if any)
+  filename         String
+  file_size        Int
+  mime_type        String
+  file_path        String
+  uploaded_by      Int // User ID or Admin ID
+  uploaded_by_type String // 'user' or 'admin'
+  created_at       DateTime @default(now())
+
+  ticket Ticket @relation(fields: [ticket_id], references: [id], onDelete: Cascade)
+
+  @@map("ticket_attachments")
+}
+
+// SLA Policies
+model SLAPolicy {
+  id                   Int            @id @default(autoincrement())
+  priority             TicketPriority
+  first_response_hours Int            @default(24)
+  resolution_hours     Int            @default(72)
+  is_active            Boolean        @default(true)
+  created_at           DateTime       @default(now())
+  updated_at           DateTime       @updatedAt
+
+  @@unique([priority])
+  @@map("sla_policies")
+}
+
+// Ticket Settings
+model TicketSetting {
+  id                   Int      @id @default(autoincrement())
+  auto_close_days      Int      @default(7)
+  max_attachments      Int      @default(5)
+  max_file_size_mb     Int      @default(10)
+  allowed_file_types   String[] @default(["image/jpeg", "image/png", "application/pdf", "text/plain"])
+  notify_on_new_ticket Boolean  @default(true)
+  notify_on_reply      Boolean  @default(true)
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  @@map("ticket_settings")
+}
+
+// Coupons
+model Coupon {
+  id            Int          @id @default(autoincrement())
+  code          String       @unique
+  discount_type DiscountType
+  value         Decimal      @db.Decimal(10, 2)
+  max_uses      Int
+  used_count    Int          @default(0)
+  expires_at    DateTime
+  created_at    DateTime     @default(now())
+
+  @@map("coupons")
+}
+
+// Admin Users
+model AdminUser {
+  id              Int                  @id @default(autoincrement())
+  email           String               @unique
+  password_hash   String
+  role            AdminRole            @default(readonly)
+  mfa_secret      String?
+  created_at      DateTime             @default(now())
+  assignedTickets Ticket[]
+  ticketMessages  TicketMessage[]
+  internalNotes   TicketInternalNote[]
+  admin_refresh_tokens AdminRefreshToken[]
+
+  audit_logs AuditLog[]
+
+  @@map("admin_users")
+}
+model AdminRefreshToken {
+  id             String    @id @default(uuid())
+  token          String    @unique
+  admin_user_id  Int       //  FIXED
+  admin_user     AdminUser @relation(fields: [admin_user_id], references: [id], onDelete: Cascade)
+  revoked        Boolean   @default(false)
+  expires_at     DateTime
+  created_at     DateTime  @default(now())
+
+  @@unique([admin_user_id, token])
+  @@index([token])
+  @@index([expires_at])
+}
+
+// Audit Logs
+model AuditLog {
+  id           Int      @id @default(autoincrement())
+  admin_id     Int
+  action       String
+  target_type  String?
+  target_id    String?
+  payload_json Json?
+  ip           String
+  created_at   DateTime @default(now())
+
+  admin AdminUser @relation(fields: [admin_id], references: [id], onDelete: Cascade)
+
+  @@map("audit_logs")
+}
+
+// Payment Gateways
+model Gateway {
+  id          Int     @id @default(autoincrement())
+  name        String
+  provider    String
+  config_json Json
+  active      Boolean @default(true)
+
+  @@map("gateways")
+}
+
+// Payments
+model Payment {
+  id              Int           @id @default(autoincrement())
+  user_id         Int
+  amount          Decimal       @db.Decimal(10, 2)
+  original_amount Decimal       @db.Decimal(10, 2)
+  currency        String        @default("usd")
+  payment_method  String
+  status          PaymentStatus @default(pending)
+  reference_id    String        @unique
+  transaction_id  String?
+  coupon_code     String?
+  coupon_discount Decimal?      @db.Decimal(10, 2)
+  metadata        Json?
+  failure_reason  String?
+  completed_at    DateTime?
+  created_at      DateTime      @default(now())
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@map("payments")
+}
+
+// User Payment Methods
+model UserPaymentMethod {
+  id                         Int      @id @default(autoincrement())
+  user_id                    Int
+  provider                   String
+  provider_customer_id       String
+  provider_payment_method_id String?
+  is_default                 Boolean  @default(false)
+  created_at                 DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id])
+
+  @@unique([user_id, provider])
+  @@map("user_payment_methods")
+}
+
+// Notification Logs
+model NotificationLog {
+  id        Int      @id @default(autoincrement())
+  recipient String
+  type      String
+  content   String
+  metadata  Json?
+  sent_at   DateTime @default(now())
+
+  user    User? @relation(fields: [user_id], references: [id])
+  user_id Int?
+
+  @@map("notification_logs")
+}
+
+// Operating System Templates
+model OsTemplate {
+  id                  Int      @id @default(autoincrement())
+  name                String
+  slug                String   @unique
+  description         String?
+  os_type             String // linux, windows, bsd
+  version             String
+  proxmox_template_id String
+  min_ram_gb          Int      @default(1)
+  min_disk_gb         Int      @default(10)
+  is_active           Boolean  @default(true)
+  created_at          DateTime @default(now())
+
+  @@map("os_templates")
+}
+
+// Activity Logs for user actions
+model ActivityLog {
+  id           String         @id @default(cuid())
+  user_id      Int
+  action       String // e.g., "SIGN_IN", "VM_CREATE", "FIREWALL_RULE_ADD"
+  action_type  ActivityType   @default(other)
+  description  String
+  service_type ServiceType    @default(other)
+  service_name String? // e.g., VM name, Firewall group name
+  ip_address   String?
+  user_agent   String?
+  status       ActivityStatus @default(success)
+  metadata     Json? // Additional data like VM ID, rule details, etc.
+  created_at   DateTime       @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([created_at])
+  @@index([action])
+  @@index([service_type])
+  @@index([status])
+  @@map("activity_logs")
+}
+
+// ============================================
+// DEDICATED SERVERS MODULE
+// ============================================
+
+model DedicatedServer {
+  id          String @id @default(cuid())
+  name        String
+  hostname    String @unique
+  user_id     Int?
+  assigned_to User?  @relation(fields: [user_id], references: [id])
+
+  // Hardware Specifications
+  cpu_model   String
+  cpu_cores   Int
+  cpu_threads Int
+  cpu_speed   String
+  ram_gb      Int
+  ram_type    String  @default("DDR4")
+  ram_speed   String?
+
+  // Storage
+  storage DedicatedServerStorage[]
+
+  // Network
+  network_port String @default("1 Gbps")
+  bandwidth_tb Int    @default(10)
+  ipv4_count   Int    @default(1)
+  ipv6_count   Int    @default(0)
+
+  // Location
+  datacenter    String
+  rack_id       String?
+  rack_position String?
+
+  // OS & Access
+  os            String?
+  os_version    String?
+  root_password String?
+  ssh_port      Int     @default(22)
+
+  // Pricing & Billing
+  monthly_price     Decimal      @db.Decimal(10, 2)
+  setup_fee         Decimal      @default(0) @db.Decimal(10, 2)
+  billing_cycle     BillingCycle @default(monthly)
+  next_billing_date DateTime?
+
+  // Status & Monitoring
+  status              ServerStatus       @default(pending)
+  provisioning_status ProvisioningStatus @default(pending)
+  ipmi_ip             String?
+  ipmi_user           String?
+  ipmi_password       String?
+
+  // KVM/Remote Management
+  kvm_enabled Boolean @default(false)
+  kvm_type    String? // iDRAC, iLO, IPMI
+  kvm_url     String?
+
+  // Bandwidth Usage
+  bandwidth_used_in_gb  Float    @default(0)
+  bandwidth_used_out_gb Float    @default(0)
+  bandwidth_last_reset  DateTime @default(now())
+
+  // Uptime & Monitoring
+  uptime_percentage  Float     @default(0)
+  last_check_at      DateTime?
+  monitoring_enabled Boolean   @default(true)
+
+  // DDoS Protection
+  ddos_protection       Boolean @default(false)
+  ddos_protection_level String? // basic, advanced, enterprise
+
+  // Backup Configuration
+  backup_enabled        Boolean @default(false)
+  backup_schedule       String? // daily, weekly, monthly
+  backup_retention_days Int     @default(30)
+
+  // Contract
+  contract_start           DateTime?
+  contract_end             DateTime?
+  auto_renew               Boolean   @default(true)
+  cancellation_notice_days Int       @default(30)
+
+  // Notes & Metadata
+  notes    String?
+  tags     String[]
+  metadata Json?
+
+  // Timestamps
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+  provisioned_at DateTime?
+  last_boot_at   DateTime?
+
+  // Relations
+  ip_addresses        IPAddress[]
+  bandwidth_usage     BandwidthUsage[]
+  power_usage         PowerUsage[]
+  server_logs         ServerLog[]
+  maintenance_windows MaintenanceWindow[]
+
+  @@unique([datacenter, rack_id, rack_position])
+  @@index([user_id])
+  @@index([status])
+  @@index([datacenter])
+  @@map("dedicated_servers")
+}
+
+model DedicatedServerStorage {
+  id          String      @id @default(cuid())
+  server_id   String
+  type        StorageType // nvme, ssd, hdd
+  size_gb     Int
+  raid_level  String? // RAID 0, 1, 5, 10
+  drive_count Int         @default(1)
+  is_primary  Boolean     @default(false)
+  created_at  DateTime    @default(now())
+
+  server DedicatedServer @relation(fields: [server_id], references: [id], onDelete: Cascade)
+
+  @@map("dedicated_server_storage")
+}
+
+model BandwidthUsage {
+  id                String   @id @default(cuid())
+  server_id         String
+  date              DateTime @default(now())
+  in_gb             Float    @default(0)
+  out_gb            Float    @default(0)
+  total_gb          Float    @default(0)
+  percentile_95_in  Float?
+  percentile_95_out Float?
+
+  server DedicatedServer @relation(fields: [server_id], references: [id], onDelete: Cascade)
+
+  @@unique([server_id, date])
+  @@map("bandwidth_usage")
+}
+
+model PowerUsage {
+  id           String   @id @default(cuid())
+  server_id    String
+  timestamp    DateTime @default(now())
+  power_watts  Float
+  voltage      Float?
+  current_amps Float?
+
+  server DedicatedServer @relation(fields: [server_id], references: [id], onDelete: Cascade)
+
+  @@map("power_usage")
+}
+
+model ServerLog {
+  id         String        @id @default(cuid())
+  server_id  String
+  log_type   ServerLogType
+  severity   LogSeverity   @default(info)
+  message    String
+  details    Json?
+  created_at DateTime      @default(now())
+
+  server DedicatedServer @relation(fields: [server_id], references: [id], onDelete: Cascade)
+
+  @@index([server_id])
+  @@index([log_type])
+  @@index([created_at])
+  @@map("server_logs")
+}
+
+model MaintenanceWindow {
+  id           String            @id @default(cuid())
+  server_id    String
+  title        String
+  description  String?
+  start_at     DateTime
+  end_at       DateTime
+  status       MaintenanceStatus @default(scheduled)
+  created_by   Int // Admin user ID
+  created_at   DateTime          @default(now())
+  completed_at DateTime?
+
+  server DedicatedServer @relation(fields: [server_id], references: [id], onDelete: Cascade)
+
+  @@map("maintenance_windows")
+}
+
+// ============================================
+// COLOCATION MODULE
+// ============================================
+
+model Colocation {
+  id          String @id @default(cuid())
+  user_id     Int?
+  assigned_to User?  @relation(fields: [user_id], references: [id])
+
+  // Location
+  datacenter    String
+  rack_id       String
+  rack_name     String?
+  unit_position String // e.g., "U12-U15"
+  unit_size     Int // Size in U
+
+  // Cabinet/Rack Details
+  cabinet_type      CabinetType @default(standard)
+  power_capacity_kw Float       @default(1.0)
+  power_used_kw     Float       @default(0)
+
+  // Network
+  network_port        String @default("1 Gbps")
+  bandwidth_mbps      Int    @default(1000)
+  bandwidth_used_mbps Float  @default(0)
+  cross_connects      Int    @default(0)
+
+  // IP Allocation
+  ipv4_allocation String? // e.g., "/29"
+  ipv6_allocation String?
+  asn             Int?
+
+  // Access & Security
+  access_level     AccessLevel           @default(full)
+  biometric_access Boolean               @default(false)
+  security_camera  Boolean               @default(true)
+  access_logs      ColocationAccessLog[]
+
+  // Power Feeds
+  power_feeds ColocationPowerFeed[]
+
+  // Cooling
+  cooling_type     String?
+  temperature_c    Float?
+  humidity_percent Float?
+
+  // Pricing
+  monthly_price      Decimal @db.Decimal(10, 2)
+  setup_fee          Decimal @default(0) @db.Decimal(10, 2)
+  power_cost_per_kwh Decimal @default(0) @db.Decimal(10, 4)
+  cross_connect_fee  Decimal @default(0) @db.Decimal(10, 2)
+
+  // Contract
+  status         ColocationStatus @default(active)
+  contract_start DateTime?
+  contract_end   DateTime?
+  auto_renew     Boolean          @default(true)
+
+  // SLA
+  sla_uptime_guarantee Float @default(99.9)
+  sla_credit_percent   Float @default(5)
+
+  // Notes & Metadata
+  notes    String?
+  tags     String[]
+  metadata Json?
+
+  // Timestamps
+  created_at      DateTime  @default(now())
+  updated_at      DateTime  @updatedAt
+  last_inspection DateTime?
+
+  // Relations
+  ip_addresses IPAddress[]
+
+  @@unique([datacenter, rack_id, unit_position])
+  @@index([user_id])
+  @@index([status])
+  @@index([datacenter])
+  @@map("colocations")
+}
+
+model ColocationPowerFeed {
+  id            String          @id @default(cuid())
+  colocation_id String
+  name          String // e.g., "Feed A", "Feed B"
+  voltage       Int             @default(230)
+  amperage      Int             @default(16)
+  phase         String          @default("single") // single, three
+  power_kw      Float           @default(0)
+  status        PowerFeedStatus @default(active)
+  created_at    DateTime        @default(now())
+
+  colocation Colocation @relation(fields: [colocation_id], references: [id], onDelete: Cascade)
+
+  @@map("colocation_power_feeds")
+}
+
+model ColocationAccessLog {
+  id               String       @id @default(cuid())
+  colocation_id    String
+  user_name        String
+  user_email       String?
+  company          String?
+  access_type      AccessType // entry, exit, denied
+  access_method    AccessMethod // biometric, keycard, pin, manual
+  escorted_by      String?
+  reason           String?
+  status           AccessStatus @default(success)
+  timestamp        DateTime     @default(now())
+  duration_minutes Int?
+
+  colocation Colocation @relation(fields: [colocation_id], references: [id], onDelete: Cascade)
+
+  @@index([colocation_id])
+  @@index([timestamp])
+  @@map("colocation_access_logs")
+}
+
+// ============================================
+// RACK MANAGEMENT
+// ============================================
+
+model Rack {
+  id                String     @id @default(cuid())
+  name              String     @unique
+  datacenter        String
+  location          String // Floor, Row
+  total_units       Int        @default(42)
+  used_units        Int        @default(0)
+  available_units   Int        @default(42)
+  power_capacity_kw Float      @default(10)
+  power_used_kw     Float      @default(0)
+  temperature_c     Float?
+  humidity_percent  Float?
+  status            RackStatus @default(operational)
+  last_inspection   DateTime?
+  created_at        DateTime   @default(now())
+  updated_at        DateTime   @updatedAt
+
+  devices RackDevice[]
+
+  @@index([datacenter])
+  @@index([status])
+  @@map("racks")
+}
+
+model RackDevice {
+  id               String       @id @default(cuid())
+  rack_id          String
+  name             String
+  type             DeviceType
+  position         Int // Starting U position
+  size_u           Int // Size in rack units
+  status           DeviceStatus @default(online)
+  power_draw_watts Float?
+  metadata         Json?
+  created_at       DateTime     @default(now())
+
+  rack Rack @relation(fields: [rack_id], references: [id], onDelete: Cascade)
+
+  @@unique([rack_id, position])
+  @@map("rack_devices")
+}
+
+model Product {
+  id   String @id @default(cuid())
+  name String
+  slug String @unique
+  sku  String @unique
+
+  // Description
+  short_description String?
+  description       String?
+
+  // Pricing
+  price          Decimal  @db.Decimal(10, 2)
+  discount_price Decimal? @db.Decimal(10, 2)
+  cost_price     Decimal? @db.Decimal(10, 2)
+
+  // Tax
+  tax_rate      Float   @default(0)
+  tax_inclusive Boolean @default(false)
+
+  // Inventory
+  stock_quantity      Int         @default(0)
+  low_stock_threshold Int         @default(5)
+  stock_status        StockStatus @default(in_stock)
+  backorder_allowed   Boolean     @default(false)
+
+  // Shipping
+  weight_kg      Float?
+  dimensions_cm  Json?
+  shipping_class String?
+
+  // Display
+  featured  Boolean       @default(false)
+  is_active Boolean       @default(true)
+  status    ProductStatus @default(draft)
+
+  // Images
+  images    String[] @default([])
+  thumbnail String?
+
+  // Specifications
+  specifications Json?
+
+  // SEO
+  meta_title       String?
+  meta_description String?
+  meta_keywords    String?
+
+  // Relations
+  categories ProductCategoryRelation[]
+  reviews    ProductReview[]
+
+  // Timestamps
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([status])
+  @@index([featured])
+  @@map("products")
+}
+
+model ProductCategory {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  parent_id   String?
+  image       String?
+  sort_order  Int      @default(0)
+  is_active   Boolean  @default(true)
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  parent   ProductCategory?          @relation("CategoryParent", fields: [parent_id], references: [id])
+  children ProductCategory[]         @relation("CategoryParent")
+  products ProductCategoryRelation[]
+
+  @@map("product_categories")
+}
+
+model ProductCategoryRelation {
+  id          String  @id @default(cuid())
+  product_id  String
+  category_id String
+  is_primary  Boolean @default(false)
+
+  product  Product         @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  category ProductCategory @relation(fields: [category_id], references: [id], onDelete: Cascade)
+
+  @@unique([product_id, category_id])
+  @@map("product_category_relations")
+}
+
+model ProductReview {
+  id            String   @id @default(cuid())
+  product_id    String
+  user_id       Int
+  rating        Int // 1-5
+  title         String?
+  content       String?
+  is_verified   Boolean  @default(false)
+  is_approved   Boolean  @default(false)
+  helpful_count Int      @default(0)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  product Product @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [user_id], references: [id])
+
+  @@map("product_reviews")
+}
+
+// ============================================
+// VM PLANS MODULE
+// ============================================
+
+model VMPlan {
+  id            Int      @id @default(autoincrement())
+  name        String
+  slug        String  @unique
+  description String?
+  tagline     String?
+  type          PlanType @default(hourly)
+
+  // Category
+  category   PlanCategory @default(starter)
+  is_popular Boolean      @default(false)
+  sort_order Int          @default(0)
+  hourly_price  Decimal? @db.Decimal(10, 4)
+  monthly_price Decimal? @db.Decimal(10, 2)
+  // Specifications
+  vcpu         Int
+  ram_gb       Int
+  storage_gb   Int
+  storage_type String @default("NVMe")
+  bandwidth_tb Int    @default(1)
+  ipv4_count   Int    @default(1)
+
+  // Pricing
+  pricing   Json // { monthly, quarterly, half_yearly, yearly }
+  setup_fee Decimal @default(0) @db.Decimal(10, 2)
+
+  // Features
+  features String[]
+
+  // Availability
+  datacenters String[]
+  os_options  String[]
+
+  // Status
+  is_active Boolean @default(true)
+
+  // Timestamps
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  vms VM[]
+
+  @@index([category])
+  @@index([is_active])
+  @@map("vm_plans")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum ServerStatus {
+  pending
+  provisioning
+  online
+  offline
+  maintenance
+  suspended
+  terminated
+  error
+}
+
+enum ProvisioningStatus {
+  pending
+  hardware_testing
+  os_installing
+  network_configuring
+  completed
+  failed
+}
+
+enum StorageType {
+  nvme
+  ssd
+  hdd
+}
+
+enum BillingCycle {
+  monthly
+  quarterly
+  half_yearly
+  yearly
+}
+
+enum ServerLogType {
+  system
+  security
+  hardware
+  network
+  user_action
+  monitoring
+}
+
+enum LogSeverity {
+  debug
+  info
+  warning
+  error
+  critical
+}
+
+enum MaintenanceStatus {
+  scheduled
+  in_progress
+  completed
+  cancelled
+}
+
+enum CabinetType {
+  standard
+  high_density
+  secure
+}
+
+enum ColocationStatus {
+  pending
+  active
+  suspended
+  terminated
+  maintenance
+}
+
+enum AccessLevel {
+  full
+  restricted
+  supervised
+}
+
+enum AccessType {
+  entry
+  exit
+  denied
+  escort
+}
+
+enum AccessMethod {
+  biometric
+  keycard
+  pin
+  manual
+}
+
+enum AccessStatus {
+  success
+  failed
+  pending
+}
+
+enum PowerFeedStatus {
+  active
+  inactive
+  maintenance
+  failed
+}
+
+enum RackStatus {
+  operational
+  maintenance
+  offline
+  full
+}
+
+enum DeviceType {
+  server
+  switch
+  firewall
+  storage
+  pdu
+  router
+  other
+}
+
+enum DeviceStatus {
+  online
+  offline
+  maintenance
+  provisioning
+  error
+}
+
+enum ProductCategoryType {
+  laptop
+  server
+  desktop
+  accessory
+  software
+  network
+  storage
+}
+
+enum StockStatus {
+  in_stock
+  low_stock
+  out_of_stock
+  backorder
+  discontinued
+}
+
+enum ProductStatus {
+  draft
+  active
+  inactive
+  archived
+}
+
+enum PlanCategory {
+  starter
+  business
+  pro
+  enterprise
+  custom
+  gpu
+}
+
+enum ActivityType {
+  sign_in
+  sign_out
+  create
+  update
+  delete
+  start
+  stop
+  reboot
+  security
+  other
+}
+
+enum ServiceType {
+  vps
+  firewall
+  ssh
+  billing
+  account
+  other
+}
+
+enum ActivityStatus {
+  success
+  failed
+  warning
+}
+
+// Enums
+enum PlanType {
+  hourly
+  monthly
+}
+
+enum VMStatus {
+  pending
+  creating
+  running
+  stopped
+  suspended
+  rebooting
+  rebuilding
+  deleting
+  deleted
+  failed
+}
+
+enum NodeStatus {
+  active
+  maintenance
+  offline
+}
+
+enum IPStatus {
+  available
+  assigned
+  reserved
+  released
+}
+
+enum TransType {
+  credit
+  debit
+}
+
+enum InvoiceStatus {
+  pending
+  paid
+  overdue
+  voided
+}
+
+enum TicketDepartment {
+  sales
+  billing
+  technical
+  abuse
+  general
+}
+
+enum TicketPriority {
+  low
+  medium
+  high
+  urgent
+}
+
+enum TicketStatus {
+  open
+  in_progress
+  resolved
+  closed
+}
+
+enum DiscountType {
+  percentage
+  fixed
+}
+
+enum AdminRole {
+  super_admin
+  accountant
+  technical
+  readonly
+}
+
+enum PaymentStatus {
+  pending
+  completed
+  failed
+  refunded
+}

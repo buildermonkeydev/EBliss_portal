@@ -1,0 +1,509 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>VM Console</title>
+    <meta charset="utf-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; overflow: hidden; font-family: monospace; }
+        canvas { width: 100vw; height: 100vh; display: block; background: #000; }
+        #status {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            color: #22c55e;
+            background: rgba(0,0,0,0.85);
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            z-index: 1000;
+            font-family: monospace;
+        }
+        #controls {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.85);
+            padding: 8px 12px;
+            border-radius: 8px;
+            z-index: 1000;
+            display: flex;
+            gap: 10px;
+        }
+        button {
+            background: #3b82f6;
+            color: white;
+            border: none;
+            padding: 6px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        button:hover { background: #2563eb; }
+        button:disabled { background: #4b5563; cursor: not-allowed; }
+        .debug {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.85);
+            color: #0f0;
+            font-size: 10px;
+            padding: 8px;
+            max-width: 500px;
+            max-height: 300px;
+            overflow: auto;
+            z-index: 1001;
+            font-family: monospace;
+            border-radius: 8px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div id="status">Initializing...</div>
+    <div id="controls">
+        <button id="ctrlAltDel" disabled>Ctrl+Alt+Del</button>
+        <button id="fullscreen">Fullscreen</button>
+    </div>
+    <div id="debug" class="debug"></div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const statusDiv = document.getElementById('status');
+        const debugDiv = document.getElementById('debug');
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const host = urlParams.get('host') || window.location.hostname;
+        const port = urlParams.get('port') || '3000';
+        let path = urlParams.get('path') || '';
+        
+        // Get parameters from path
+        const pathParams = new URLSearchParams(path);
+        const vmid = pathParams.get('vmid');
+        const vncPort = pathParams.get('port');
+        const vncticket = pathParams.get('vncticket');
+        
+        // The password is the full vncticket
+        const fullVncTicket = vncticket || '';
+        const desKey = fullVncTicket.substring(0, 8);
+        
+        console.log(`[VNC] DES Key: ${desKey}`);
+        console.log(`[VNC] VM ID: ${vmid}, Port: ${vncPort}`);
+        
+        let ws = null;
+        let step = 0;
+        let fbWidth = 0, fbHeight = 0;
+        let recvBuffer = new Uint8Array(0);
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 3;
+
+        function addDebug(msg) {
+            const time = new Date().toLocaleTimeString();
+            debugDiv.innerHTML = `[${time}] ${msg}<br>` + debugDiv.innerHTML;
+            console.log(msg);
+        }
+
+        // DES implementation (same as before)
+        const DES = (() => {
+            const PC1 = [57,49,41,33,25,17,9,1,58,50,42,34,26,18,10,2,59,51,43,35,27,19,11,3,60,52,44,36,63,55,47,39,31,23,15,7,62,54,46,38,30,22,14,6,61,53,45,37,29,21,13,5,28,20,12,4];
+            const PC2 = [14,17,11,24,1,5,3,28,15,6,21,10,23,19,12,4,26,8,16,7,27,20,13,2,41,52,31,37,47,55,30,40,51,45,33,48,44,49,39,56,34,53,46,42,50,36,29,32];
+            const IP = [58,50,42,34,26,18,10,2,60,52,44,36,28,20,12,4,62,54,46,38,30,22,14,6,64,56,48,40,32,24,16,8,57,49,41,33,25,17,9,1,59,51,43,35,27,19,11,3,61,53,45,37,29,21,13,5,63,55,47,39,31,23,15,7];
+            const IP2 = [40,8,48,16,56,24,64,32,39,7,47,15,55,23,63,31,38,6,46,14,54,22,62,30,37,5,45,13,53,21,61,29,36,4,44,12,52,20,60,28,35,3,43,11,51,19,59,27,34,2,42,10,50,18,58,26,33,1,41,9,49,17,57,25];
+            const E = [32,1,2,3,4,5,4,5,6,7,8,9,8,9,10,11,12,13,12,13,14,15,16,17,16,17,18,19,20,21,20,21,22,23,24,25,24,25,26,27,28,29,28,29,30,31,32,1];
+            const P = [16,7,20,21,29,12,28,17,1,15,23,26,5,18,31,10,2,8,24,14,32,27,3,9,19,13,30,6,22,11,4,25];
+            const S = [
+                [14,4,13,1,2,15,11,8,3,10,6,12,5,9,0,7,0,15,7,4,14,2,13,1,10,6,12,11,9,5,3,8,4,1,14,8,13,6,2,11,15,12,9,7,3,10,5,0,15,12,8,2,4,9,1,7,5,11,3,14,10,0,6,13],
+                [15,1,8,14,6,11,3,4,9,7,2,13,12,0,5,10,3,13,4,7,15,2,8,14,12,0,1,10,6,9,11,5,0,14,7,11,10,4,13,1,5,8,12,6,9,3,2,15,13,8,10,1,3,15,4,2,11,6,7,12,0,5,14,9],
+                [10,0,9,14,6,3,15,5,1,13,12,7,11,4,2,8,13,7,0,9,3,4,6,10,2,8,5,14,12,11,15,1,13,6,4,9,8,15,3,0,11,1,2,12,5,10,14,7,1,10,13,0,6,9,8,7,4,15,14,3,11,5,2,12],
+                [7,13,14,3,0,6,9,10,1,2,8,5,11,12,4,15,13,8,11,5,6,15,0,3,4,7,2,12,1,10,14,9,10,6,9,0,12,11,7,13,15,1,3,14,5,2,8,4,3,15,0,6,10,1,13,8,9,4,5,11,12,7,2,14],
+                [2,12,4,1,7,10,11,6,8,5,3,15,13,0,14,9,14,11,2,12,4,7,13,1,5,0,15,10,3,9,8,6,4,2,1,11,10,13,7,8,15,9,12,5,6,3,0,14,11,8,12,7,1,14,2,13,6,15,0,9,10,4,5,3],
+                [12,1,10,15,9,2,6,8,0,13,3,4,14,7,5,11,10,15,4,2,7,12,9,5,6,1,13,14,0,11,3,8,9,14,15,5,2,8,12,3,7,0,4,10,1,13,11,6,4,3,2,12,9,5,15,10,11,14,1,7,6,0,8,13],
+                [4,11,2,14,15,0,8,13,3,12,9,7,5,10,6,1,13,0,11,7,4,9,1,10,14,3,5,12,2,15,8,6,1,4,11,13,12,3,7,14,10,15,6,8,0,5,9,2,6,11,13,8,1,4,10,7,9,5,0,15,14,2,3,12],
+                [13,2,8,4,6,15,11,1,10,9,3,14,5,0,12,7,1,15,13,8,10,3,7,4,12,5,6,11,0,14,9,2,7,11,4,1,9,12,14,2,0,6,10,13,15,3,5,8,2,1,14,7,4,10,8,13,15,12,9,0,3,5,6,11]
+            ];
+            const SHIFTS = [1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1];
+
+            function permute(block, table, n) {
+                let out = 0n;
+                for (let i = 0; i < n; i++) {
+                    out = (out << 1n) | ((block >> BigInt(64 - table[i])) & 1n);
+                }
+                return out;
+            }
+
+            function generateSubkeys(key64) {
+                let cd = permute(key64, PC1, 56);
+                let c = cd >> 28n;
+                let d = cd & 0xFFFFFFFn;
+                const subkeys = [];
+                for (let i = 0; i < 16; i++) {
+                    const s = BigInt(SHIFTS[i]);
+                    c = ((c << s) | (c >> (28n - s))) & 0xFFFFFFFn;
+                    d = ((d << s) | (d >> (28n - s))) & 0xFFFFFFFn;
+                    const cd2 = (c << 28n) | d;
+                    subkeys.push(permute(cd2, PC2, 48));
+                }
+                return subkeys;
+            }
+
+            function desBlock(block64, subkeys) {
+                let lr = permute(block64, IP, 64);
+                let l = lr >> 32n;
+                let r = lr & 0xFFFFFFFFn;
+                for (let i = 0; i < 16; i++) {
+                    const e = permute(r, E, 48);
+                    let x = e ^ subkeys[i];
+                    let f = 0n;
+                    for (let j = 0; j < 8; j++) {
+                        const b = Number((x >> BigInt(42 - j * 6)) & 0x3Fn);
+                        const row = ((b & 0x20) >> 4) | (b & 1);
+                        const col = (b >> 1) & 0xF;
+                        f = (f << 4n) | BigInt(S[j][row * 16 + col]);
+                    }
+                    f = permute(f, P, 32);
+                    const newR = l ^ f;
+                    l = r;
+                    r = newR;
+                }
+                return permute((r << 32n) | l, IP2, 64);
+            }
+
+            function reverseBits(b) {
+                let r = 0;
+                for (let i = 0; i < 8; i++) r |= ((b >> i) & 1) << (7 - i);
+                return r;
+            }
+
+            function encrypt(challenge, keyStr) {
+                const keyBytes = new Uint8Array(8);
+                for (let i = 0; i < 8; i++) {
+                    keyBytes[i] = reverseBits(i < keyStr.length ? keyStr.charCodeAt(i) : 0);
+                }
+                let key64 = 0n;
+                for (let i = 0; i < 8; i++) key64 = (key64 << 8n) | BigInt(keyBytes[i]);
+                const subkeys = generateSubkeys(key64);
+
+                const result = new Uint8Array(16);
+                for (let block = 0; block < 2; block++) {
+                    let plain = 0n;
+                    for (let i = 0; i < 8; i++) plain = (plain << 8n) | BigInt(challenge[block * 8 + i]);
+                    const enc = desBlock(plain, subkeys);
+                    for (let i = 0; i < 8; i++) result[block * 8 + i] = Number((enc >> BigInt(56 - i * 8)) & 0xFFn);
+                }
+                return result;
+            }
+
+            return { encrypt };
+        })();
+
+        function bytesToString(bytes) {
+            return Array.from(bytes).map(b => String.fromCharCode(b)).join('');
+        }
+
+        function bytesToHex(bytes) {
+            return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        }
+
+        function processBuffer() {
+            while (true) {
+                if (step === 0) {
+                    if (recvBuffer.length < 12) break;
+                    addDebug(`Server version: ${bytesToString(recvBuffer.slice(0, 12))}`);
+                    recvBuffer = recvBuffer.slice(12);
+                    ws.send(new TextEncoder().encode('RFB 003.008\n'));
+                    step = 1;
+                }
+                else if (step === 1) {
+                    if (recvBuffer.length < 1) break;
+                    const numTypes = recvBuffer[0];
+                    if (recvBuffer.length < 1 + numTypes) break;
+                    const types = Array.from(recvBuffer.slice(1, 1 + numTypes));
+                    addDebug(`Security types: ${types}`);
+                    recvBuffer = recvBuffer.slice(1 + numTypes);
+                    ws.send(new Uint8Array([2]));
+                    step = 2;
+                }
+                else if (step === 2) {
+                    if (recvBuffer.length < 16) break;
+                    const challenge = recvBuffer.slice(0, 16);
+                    recvBuffer = recvBuffer.slice(16);
+                    addDebug(`Challenge received, encrypting with DES key...`);
+                    
+                    const response = DES.encrypt(challenge, desKey);
+                    addDebug(`Response sent`);
+                    ws.send(response);
+                    step = 3;
+                }
+                else if (step === 3) {
+                    if (recvBuffer.length < 4) break;
+                    const result = recvBuffer.slice(0, 4);
+                    recvBuffer = recvBuffer.slice(4);
+                    const code = (result[0] << 24) | (result[1] << 16) | (result[2] << 8) | result[3];
+                    addDebug(`Auth result code: ${code}`);
+                    
+                    if (code === 0) {
+                        addDebug(`✅ AUTHENTICATION SUCCESS!`);
+                        ws.send(new Uint8Array([1]));
+                        step = 4;
+                    } else {
+                        addDebug(`❌ Authentication FAILED (code=${code})`);
+                        updateStatus(`Authentication failed`, true);
+                        if (ws) ws.close();
+                        return;
+                    }
+                }
+                else if (step === 4) {
+                    if (recvBuffer.length < 24) break;
+                    const nameLen = (recvBuffer[20] << 24) | (recvBuffer[21] << 16) | (recvBuffer[22] << 8) | recvBuffer[23];
+                    if (recvBuffer.length < 24 + nameLen) break;
+
+                    fbWidth = (recvBuffer[0] << 8) | recvBuffer[1];
+                    fbHeight = (recvBuffer[2] << 8) | recvBuffer[3];
+                    const name = bytesToString(recvBuffer.slice(24, 24 + nameLen));
+                    recvBuffer = recvBuffer.slice(24 + nameLen);
+
+                    addDebug(`ServerInit: ${fbWidth}x${fbHeight} "${name}"`);
+                    updateStatus(`Connected: ${fbWidth}x${fbHeight}`);
+
+                    canvas.width = fbWidth || 800;
+                    canvas.height = fbHeight || 600;
+                    document.getElementById('ctrlAltDel').disabled = false;
+
+                    step = 5;
+                    requestFramebufferUpdate();
+                    setInterval(requestFramebufferUpdate, 100);
+                    break;
+                }
+                else if (step === 5) {
+                    if (recvBuffer.length < 1) break;
+                    const msgType = recvBuffer[0];
+                    
+                    if (msgType === 0) {
+                        if (recvBuffer.length < 4) break;
+                        const numRects = (recvBuffer[2] << 8) | recvBuffer[3];
+                        let offset = 4;
+                        let incomplete = false;
+
+                        for (let r = 0; r < numRects; r++) {
+                            if (recvBuffer.length < offset + 12) { incomplete = true; break; }
+                            const x = (recvBuffer[offset] << 8) | recvBuffer[offset+1];
+                            const y = (recvBuffer[offset+2] << 8) | recvBuffer[offset+3];
+                            const w = (recvBuffer[offset+4] << 8) | recvBuffer[offset+5];
+                            const h = (recvBuffer[offset+6] << 8) | recvBuffer[offset+7];
+                            const encType = (recvBuffer[offset+8] << 24) | (recvBuffer[offset+9] << 16) | (recvBuffer[offset+10] << 8) | recvBuffer[offset+11];
+                            offset += 12;
+
+                            if (encType === 0) {
+                                const pixBytes = w * h * 4;
+                                if (recvBuffer.length < offset + pixBytes) { incomplete = true; break; }
+
+                                const imageData = ctx.createImageData(w, h);
+                                for (let i = 0; i < w * h; i++) {
+                                    const pi = offset + i * 4;
+                                    imageData.data[i * 4 + 0] = recvBuffer[pi + 2];
+                                    imageData.data[i * 4 + 1] = recvBuffer[pi + 1];
+                                    imageData.data[i * 4 + 2] = recvBuffer[pi + 0];
+                                    imageData.data[i * 4 + 3] = 255;
+                                }
+                                ctx.putImageData(imageData, x, y);
+                                offset += pixBytes;
+                            }
+                        }
+
+                        if (incomplete) break;
+                        recvBuffer = recvBuffer.slice(offset);
+                    }
+                    else {
+                        recvBuffer = recvBuffer.slice(1);
+                    }
+                }
+                else {
+                    break;
+                }
+            }
+        }
+
+        function requestFramebufferUpdate() {
+            if (ws && ws.readyState === WebSocket.OPEN && fbWidth > 0) {
+                const req = new Uint8Array([
+                    3, 0, 0, 0, 0, 0,
+                    (fbWidth >> 8) & 0xFF, fbWidth & 0xFF,
+                    (fbHeight >> 8) & 0xFF, fbHeight & 0xFF
+                ]);
+                ws.send(req);
+            }
+        }
+
+        function updateStatus(text, isError = false) {
+            statusDiv.innerHTML = text;
+            statusDiv.style.color = isError ? '#ef4444' : '#22c55e';
+        }
+
+        function connect() {
+            try {
+                // Connect directly to Proxmox WebSocket
+                const wsUrl = `wss://${host}/api/proxmox/vncproxy?vmid=${vmid}&port=${vncPort}&vncticket=${encodeURIComponent(fullVncTicket)}`;
+                addDebug(`Connecting to: ${wsUrl}`);
+                updateStatus('Connecting...');
+
+                ws = new WebSocket(wsUrl);
+                ws.binaryType = 'arraybuffer';
+
+                ws.onopen = function() {
+                    addDebug('WebSocket opened');
+                    updateStatus('Connected, authenticating...');
+                    step = 0;
+                    recvBuffer = new Uint8Array(0);
+                    reconnectAttempts = 0;
+                };
+
+                ws.onmessage = function(event) {
+                    let incoming;
+                    if (event.data instanceof ArrayBuffer) {
+                        incoming = new Uint8Array(event.data);
+                    } else {
+                        incoming = new TextEncoder().encode(event.data);
+                    }
+                    const oldBuffer = recvBuffer;
+                    recvBuffer = new Uint8Array(oldBuffer.length + incoming.length);
+                    recvBuffer.set(oldBuffer);
+                    recvBuffer.set(incoming, oldBuffer.length);
+                    processBuffer();
+                };
+
+                ws.onerror = function(err) {
+                    addDebug(`WebSocket error`);
+                    updateStatus('Connection error', true);
+                };
+
+                ws.onclose = function(event) {
+                    addDebug(`WebSocket closed: ${event.code}`);
+                    updateStatus(`Disconnected`, true);
+                    document.getElementById('ctrlAltDel').disabled = true;
+                    
+                    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+                        reconnectAttempts++;
+                        addDebug(`Reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                        setTimeout(connect, 2000);
+                    }
+                };
+
+            } catch (err) {
+                addDebug(`Error: ${err.message}`);
+                updateStatus('Error: ' + err.message, true);
+            }
+        }
+
+        // Start connection
+        if (fullVncTicket && vmid && vncPort) {
+            connect();
+        } else {
+            updateStatus('Missing VNC parameters', true);
+            addDebug(`ERROR: Missing parameters - vmid: ${vmid}, port: ${vncPort}, ticket: ${!!fullVncTicket}`);
+        }
+
+        // Event handlers
+        document.getElementById('ctrlAltDel').onclick = function() {
+            if (ws && ws.readyState === WebSocket.OPEN && step >= 5) {
+                function keyEvent(down, key) {
+                    const msg = new Uint8Array(8);
+                    msg[0] = 4;
+                    msg[1] = down ? 1 : 0;
+                    msg[6] = (key >> 8) & 0xFF;
+                    msg[7] = key & 0xFF;
+                    ws.send(msg);
+                }
+                keyEvent(1, 0xFFE3);
+                keyEvent(1, 0xFFE9);
+                keyEvent(1, 0xFFFF);
+                keyEvent(0, 0xFFFF);
+                keyEvent(0, 0xFFE9);
+                keyEvent(0, 0xFFE3);
+            }
+        };
+
+        document.getElementById('fullscreen').onclick = function() {
+            if (document.documentElement.requestFullscreen) {
+                document.documentElement.requestFullscreen();
+            }
+        };
+
+        // Double-click to show debug
+        debugDiv.style.display = 'none';
+        document.addEventListener('dblclick', () => {
+            debugDiv.style.display = debugDiv.style.display === 'none' ? 'block' : 'none';
+        });
+
+        // Keyboard input
+        document.addEventListener('keydown', (e) => {
+            if (!ws || ws.readyState !== WebSocket.OPEN || step < 5) return;
+            if (e.key !== 'F11') e.preventDefault();
+            sendKey(e, true);
+        });
+        document.addEventListener('keyup', (e) => {
+            if (!ws || ws.readyState !== WebSocket.OPEN || step < 5) return;
+            if (e.key !== 'F11') e.preventDefault();
+            sendKey(e, false);
+        });
+
+        function sendKey(e, down) {
+            const keyMap = {
+                'Backspace': 0xFF08, 'Tab': 0xFF09, 'Enter': 0xFF0D, 'Escape': 0xFF1B,
+                'Delete': 0xFFFF, 'Home': 0xFF50, 'End': 0xFF57, 'PageUp': 0xFF55,
+                'PageDown': 0xFF56, 'ArrowLeft': 0xFF51, 'ArrowUp': 0xFF52,
+                'ArrowRight': 0xFF53, 'ArrowDown': 0xFF54, 'Insert': 0xFF63,
+            };
+            let keysym = keyMap[e.key];
+            if (!keysym) {
+                if (e.key.length === 1) keysym = e.key.charCodeAt(0);
+                else return;
+            }
+            const msg = new Uint8Array(8);
+            msg[0] = 4;
+            msg[1] = down ? 1 : 0;
+            msg[6] = (keysym >> 8) & 0xFF;
+            msg[7] = keysym & 0xFF;
+            ws.send(msg);
+        }
+
+        // Mouse input
+        canvas.addEventListener('mousemove', (e) => sendMouse(e));
+        canvas.addEventListener('mousedown', (e) => sendMouse(e));
+        canvas.addEventListener('mouseup', (e) => sendMouse(e));
+
+        let mouseButtons = 0;
+        function sendMouse(e) {
+            if (!ws || ws.readyState !== WebSocket.OPEN || step < 5) return;
+            if (e.type === 'mousedown') mouseButtons |= (1 << e.button);
+            if (e.type === 'mouseup') mouseButtons &= ~(1 << e.button);
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = fbWidth / rect.width;
+            const scaleY = fbHeight / rect.height;
+            const x = Math.round((e.clientX - rect.left) * scaleX);
+            const y = Math.round((e.clientY - rect.top) * scaleY);
+            let mask = 0;
+            if (mouseButtons & 1) mask |= 1;
+            if (mouseButtons & 4) mask |= 2;
+            if (mouseButtons & 2) mask |= 4;
+            const msg = new Uint8Array(6);
+            msg[0] = 5;
+            msg[1] = mask;
+            msg[2] = (x >> 8) & 0xFF;
+            msg[3] = x & 0xFF;
+            msg[4] = (y >> 8) & 0xFF;
+            msg[5] = y & 0xFF;
+            ws.send(msg);
+        }
+
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#0f0';
+        ctx.font = '20px monospace';
+        ctx.fillText('Connecting to VM console...', 20, 50);
+    </script>
+</body>
+</html>
