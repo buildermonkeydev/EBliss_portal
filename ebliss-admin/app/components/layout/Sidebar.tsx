@@ -151,13 +151,7 @@ const allMenuItems: MenuItemConfig[] = [
   },
   
   // Admin Users (Super Admin only)
-  { 
-    href: '/admin/users', 
-    label: 'Admin Users', 
-    icon: UserCog,
-    roles: ['super_admin']
-  },
-  
+
   // Billing & Invoices
   { 
     href: '/invoices', 

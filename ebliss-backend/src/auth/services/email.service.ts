@@ -6,6 +6,9 @@ import * as handlebars from 'handlebars';
 import * as fs from 'fs';
 import * as path from 'path';
 
+
+const FRONTEND_URL = 'https://nexus.buildermonkey.com';
+
 @Injectable()
 export class EmailService {
   private transporter: nodemailer.Transporter;

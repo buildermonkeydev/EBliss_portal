@@ -151,7 +151,7 @@ export class NotificationService implements OnModuleInit {
       amount: amount.toFixed(2),
       transaction_id: transactionId,
       date: moment().format('MMMM DD, YYYY HH:mm:ss'),
-      wallet_url: `${process.env.APP_URL || 'http://localhost:3000'}/wallet`,
+      wallet_url: `${process.env.APP_URL }/wallet`,
       support_email: process.env.SUPPORT_EMAIL || 'support@ebliss.com',
     };
 
@@ -407,7 +407,7 @@ export class NotificationService implements OnModuleInit {
       amount: amount.toFixed(2),
       days_left: daysLeft,
       due_date: moment(dueDate).format('MMMM DD, YYYY'),
-      invoice_url: `${process.env.APP_URL || 'http://localhost:3000'}/invoices/${invoiceId}`,
+      invoice_url: `${process.env.APP_URL }/invoices/${invoiceId}`,
       support_email: process.env.SUPPORT_EMAIL,
     };
 
