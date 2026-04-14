@@ -244,7 +244,7 @@ export default function SSHKeysPage() {
                   </div>
                   
                   <div className="flex gap-3">
-                    <motion.button
+                    {/* <motion.button
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                       onClick={syncKeys}
@@ -252,7 +252,7 @@ export default function SSHKeysPage() {
                     >
                       <FaSync className="w-4 h-4" />
                       Sync Keys
-                    </motion.button>
+                    </motion.button> */}
                     <motion.button
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
