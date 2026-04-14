@@ -116,7 +116,7 @@ export default function ColocationInfrastructure() {
   // Fetch colocation data
   const fetchColocations = useCallback(async () => {
     try {
-      const response = await api.get("/colocations");
+      const response = await api.get("/colocations/user/me");
       const data = response.data;
       
       let colocationList: Colocation[] = [];

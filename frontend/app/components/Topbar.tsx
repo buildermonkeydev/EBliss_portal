@@ -4,78 +4,20 @@ import { useState, useEffect, useRef } from "react";
 import { 
   FaSearch, 
   FaBell, 
-  FaUser, 
-  FaCog, 
   FaSignOutAlt, 
-  FaMoon, 
-  FaSun,
   FaUserCircle,
-  FaEnvelope,
   FaQuestionCircle,
   FaSpinner,
   FaCreditCard,
   FaServer,
-  FaShieldAlt,
-  FaChartLine,
   FaChevronRight,
-  FaMicrochip,
-  FaHdd,
-  FaGlobe,
   FaFileAlt,
-  FaTag
+  FaTag,
+  FaWallet
 } from "react-icons/fa";
 import { useRouter } from "next/navigation";
-import Image from "next/image";
 import { useAuth } from "@/contexts/AuthContext";
-
-// Search Result Item Component
-function SearchResultItem({ result, onClose }: { result: SearchResultType; onClose: () => void }) {
-  const router = useRouter();
-  
-  const getIcon = () => {
-    switch(result.type) {
-      case 'vps': return <FaServer className="text-indigo-400" />;
-      case 'invoice': return <FaCreditCard className="text-green-400" />;
-      case 'user': return <FaUserCircle className="text-blue-400" />;
-      case 'document': return <FaFileAlt className="text-yellow-400" />;
-      default: return <FaTag className="text-purple-400" />;
-    }
-  };
-  
-  const getTypeColor = () => {
-    switch(result.type) {
-      case 'vps': return 'bg-indigo-500/20 text-indigo-400';
-      case 'invoice': return 'bg-green-500/20 text-green-400';
-      case 'user': return 'bg-blue-500/20 text-blue-400';
-      case 'document': return 'bg-yellow-500/20 text-yellow-400';
-      default: return 'bg-purple-500/20 text-purple-400';
-    }
-  };
-  
-  return (
-    <button
-      onClick={() => {
-        router.push(result.link);
-        onClose();
-      }}
-      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-700/50 transition-all group"
-    >
-      <div className="w-8 h-8 bg-slate-700 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform">
-        {getIcon()}
-      </div>
-      <div className="flex-1 text-left">
-        <p className="text-white text-sm font-medium group-hover:text-indigo-400 transition-colors">
-          {result.title}
-        </p>
-        <p className="text-slate-400 text-xs">{result.description}</p>
-      </div>
-      <span className={`text-xs px-2 py-1 rounded ${getTypeColor()}`}>
-        {result.type.toUpperCase()}
-      </span>
-      <FaChevronRight className="text-slate-600 group-hover:text-indigo-400 transition-colors text-xs" />
-    </button>
-  );
-}
+import api from "@/lib/api/auth";
 
 // Types
 interface SearchResultType {
@@ -87,11 +29,33 @@ interface SearchResultType {
   tags?: string[];
 }
 
+interface NotificationType {
+  id: number;
+  title: string;
+  message: string;
+  time: string;
+  read: boolean;
+  type: 'success' | 'warning' | 'error' | 'info';
+  link?: string;
+  created_at: string;
+}
+
+interface UserProfile {
+  id: number;
+  email: string;
+  name: string;
+  role: string;
+  verified: boolean;
+  company?: string;
+  state?: string;
+  tax_id?: string;
+  wallet_balance: string | number;
+}
+
 export default function Topbar() {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSearchResults, setShowSearchResults] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -99,8 +63,11 @@ export default function Topbar() {
   const [searchResults, setSearchResults] = useState<SearchResultType[]>([]);
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [selectedFilter, setSelectedFilter] = useState<'all' | 'vps' | 'invoice' | 'user' | 'document'>('all');
-  const [notifications, setNotifications] = useState<any[]>([]);
+  const [notifications, setNotifications] = useState<NotificationType[]>([]);
   const [isLoadingNotifications, setIsLoadingNotifications] = useState(false);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
   
   const userMenuRef = useRef<HTMLDivElement>(null);
   const notificationsRef = useRef<HTMLDivElement>(null);
@@ -117,6 +84,57 @@ export default function Topbar() {
     }
   }, []);
 
+  // Fetch user profile
+  useEffect(() => {
+    fetchUserProfile();
+    fetchNotifications();
+  }, []);
+
+  const fetchUserProfile = async () => {
+    setIsLoadingProfile(true);
+    try {
+      const response = await api.get("/users/me");
+      setUserProfile(response.data);
+    } catch (error) {
+      console.error("Failed to fetch user profile:", error);
+      // Fallback to auth context user
+      if (user) {
+        setUserProfile({
+          id: user.id,
+          email: user.email,
+          name: user.name || user.email?.split('@')[0] || 'User',
+          role: user.role,
+          verified: user.verified || false,
+          wallet_balance: 0,
+        });
+      }
+    } finally {
+      setIsLoadingProfile(false);
+    }
+  };
+
+  // Fetch wallet balance separately
+  const fetchWalletBalance = async () => {
+    try {
+      const response = await api.get("/wallet/balance");
+      if (userProfile) {
+        setUserProfile({
+          ...userProfile,
+          wallet_balance: response.data.balance,
+        });
+      }
+    } catch (error) {
+      console.error("Failed to fetch wallet balance:", error);
+    }
+  };
+
+  // Fetch wallet balance when profile loads
+  useEffect(() => {
+    if (userProfile) {
+      fetchWalletBalance();
+    }
+  }, [userProfile?.id]);
+
   // Save recent searches
   const saveRecentSearch = (query: string) => {
     const updated = [query, ...recentSearches.filter(s => s !== query)].slice(0, 5);
@@ -124,57 +142,41 @@ export default function Topbar() {
     localStorage.setItem('recentSearches', JSON.stringify(updated));
   };
 
-  // Fetch notifications
-  useEffect(() => {
-    fetchNotifications();
-  }, []);
-
   const fetchNotifications = async () => {
     setIsLoadingNotifications(true);
     try {
-      const mockNotifications = [
-        { 
-          id: 1, 
-          title: "VPS Deployed", 
-          message: "Your VPS 'operation' has been deployed successfully", 
-          time: "2 min ago", 
-          read: false, 
-          type: "success",
-          link: "/vms/1"
-        },
-        { 
-          id: 2, 
-          title: "High CPU Usage", 
-          message: "VPS 'web-server' is experiencing high CPU usage (85%)", 
-          time: "15 min ago", 
-          read: false, 
-          type: "warning",
-          link: "/vms/2"
-        },
-        { 
-          id: 3, 
-          title: "Invoice Ready", 
-          message: "Your March invoice (INV-2024-003) is ready for payment", 
-          time: "1 hour ago", 
-          read: true, 
-          type: "info",
-          link: "/billing"
-        },
-        { 
-          id: 4, 
-          title: "Maintenance Scheduled", 
-          message: "Scheduled maintenance in Frankfurt region in 24 hours", 
-          time: "3 hours ago", 
-          read: true, 
-          type: "info",
-          link: "/status"
-        },
-      ];
-      setNotifications(mockNotifications);
+      const response = await api.get("/notifications");
+      const notificationData = response.data.notifications || response.data || [];
+      setNotifications(notificationData);
+      setUnreadCount(notificationData.filter((n: NotificationType) => !n.read).length);
     } catch (error) {
       console.error("Failed to fetch notifications:", error);
+      setNotifications([]);
+      setUnreadCount(0);
     } finally {
       setIsLoadingNotifications(false);
+    }
+  };
+
+  const markNotificationAsRead = async (notificationId: number) => {
+    try {
+      await api.patch(`/notifications/${notificationId}/read`);
+      setNotifications(prev => 
+        prev.map(n => n.id === notificationId ? { ...n, read: true } : n)
+      );
+      setUnreadCount(prev => Math.max(0, prev - 1));
+    } catch (error) {
+      console.error("Failed to mark notification as read:", error);
+    }
+  };
+
+  const markAllNotificationsAsRead = async () => {
+    try {
+      await api.post("/notifications/mark-all-read");
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadCount(0);
+    } catch (error) {
+      console.error("Failed to mark all notifications as read:", error);
     }
   };
 
@@ -187,97 +189,33 @@ export default function Topbar() {
     
     setIsSearching(true);
     try {
-      // Mock search results - replace with actual API call
-      const mockResults: SearchResultType[] = [
-        {
-          id: '1',
-          type: 'vps',
-          title: 'Web Server VPS',
-          description: 'Ubuntu 22.04, 4GB RAM, 80GB SSD, Location: Frankfurt',
-          link: '/vps/web-server',
-          tags: ['ubuntu', 'web', 'production']
-        },
-        {
-          id: '2',
-          type: 'vps',
-          title: 'Database Server',
-          description: 'Debian 12, 8GB RAM, 160GB SSD, Location: Singapore',
-          link: '/vps/db-server',
-          tags: ['database', 'debian', 'high-memory']
-        },
-        {
-          id: '3',
-          type: 'vps',
-          title: 'Game Server',
-          description: 'Windows Server 2022, 16GB RAM, 240GB NVMe',
-          link: '/vps/game-server',
-          tags: ['gaming', 'windows', 'high-performance']
-        },
-        {
-          id: '4',
-          type: 'invoice',
-          title: 'INV-2024-001',
-          description: 'VPS Hosting - Web Server - $49.99 (Due: Mar 15, 2024)',
-          link: '/billing/invoice/1',
-          tags: ['pending', 'march-2024']
-        },
-        {
-          id: '5',
-          type: 'invoice',
-          title: 'INV-2024-002',
-          description: 'Database Server - $89.99 (Paid)',
-          link: '/billing/invoice/2',
-          tags: ['paid', 'february-2024']
-        },
-        {
-          id: '6',
-          type: 'user',
-          title: user?.name || 'My Profile',
-          description: user?.email || 'Manage account settings',
-          link: '/account',
-          tags: ['profile', 'settings']
-        },
-        {
-          id: '7',
-          type: 'document',
-          title: 'Getting Started Guide',
-          description: 'Learn how to deploy your first VPS',
-          link: '/docs/getting-started',
-          tags: ['tutorial', 'beginner']
-        },
-        {
-          id: '8',
-          type: 'document',
-          title: 'API Documentation',
-          description: 'REST API endpoints and authentication',
-          link: '/docs/api',
-          tags: ['api', 'developer']
-        },
-        {
-          id: '9',
-          type: 'other',
-          title: 'Support Ticket #12345',
-          description: 'Technical support request - Status: Open',
-          link: '/support/ticket/12345',
-          tags: ['open', 'urgent']
-        }
-      ];
+      const response = await api.get(`/search?q=${encodeURIComponent(query)}&type=${selectedFilter}`);
       
-      // Filter based on search query
-      let filtered = mockResults.filter(result =>
-        result.title.toLowerCase().includes(query.toLowerCase()) ||
-        result.description.toLowerCase().includes(query.toLowerCase()) ||
-        result.tags?.some(tag => tag.toLowerCase().includes(query.toLowerCase()))
-      );
+      let results: SearchResultType[] = [];
       
-      // Apply type filter
-      if (selectedFilter !== 'all') {
-        filtered = filtered.filter(result => result.type === selectedFilter);
+      if (response.data.results) {
+        results = response.data.results;
+      } else if (response.data.vms) {
+        // Transform VMs to search results
+        results = response.data.vms.map((vm: any) => ({
+          id: vm.id.toString(),
+          type: 'vps' as const,
+          title: vm.name || vm.hostname,
+          description: `${vm.vcpu} vCPU, ${vm.ram_gb}GB RAM, ${vm.ssd_gb}GB SSD - ${vm.status}`,
+          link: `/vps/${vm.id}`,
+          tags: [vm.status, vm.plan_type]
+        }));
       }
       
-      setSearchResults(filtered);
+      // Filter by selected filter if not 'all'
+      if (selectedFilter !== 'all') {
+        results = results.filter(r => r.type === selectedFilter);
+      }
+      
+      setSearchResults(results);
     } catch (error) {
       console.error("Search failed:", error);
+      setSearchResults([]);
     } finally {
       setIsSearching(false);
     }
@@ -325,36 +263,6 @@ export default function Topbar() {
     }
   };
 
-  const handleResultClick = (result: SearchResultType) => {
-    saveRecentSearch(searchQuery);
-    router.push(result.link);
-    setShowSearchResults(false);
-    setSearchQuery("");
-  };
-
-  const toggleTheme = () => {
-    setIsDarkMode(!isDarkMode);
-    if (!isDarkMode) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
-    }
-  };
-
-  // Load theme from localStorage on mount
-  useEffect(() => {
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'light') {
-      setIsDarkMode(false);
-      document.documentElement.classList.remove('dark');
-    } else {
-      setIsDarkMode(true);
-      document.documentElement.classList.add('dark');
-    }
-  }, []);
-
   const handleLogout = async () => {
     setIsLoggingOut(true);
     try {
@@ -387,8 +295,6 @@ export default function Topbar() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, []);
 
-  const unreadCount = notifications.filter(n => !n.read).length;
-
   const getNotificationIcon = (type: string) => {
     switch(type) {
       case 'success': return '✅';
@@ -407,14 +313,37 @@ export default function Topbar() {
     }
   };
 
+  const formatTimeAgo = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins} min ago`;
+    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    return date.toLocaleDateString();
+  };
+
+  const formatCurrency = (amount: number | string) => {
+    const num = typeof amount === 'string' ? parseFloat(amount) : amount;
+    return `₹${num.toLocaleString('en-IN')}`;
+  };
+
+  const displayName = userProfile?.name || user?.name || user?.email?.split('@')[0] || 'User';
+  const displayEmail = userProfile?.email || user?.email || '';
+  const firstChar = displayName.charAt(0).toUpperCase();
+
   return (
     <div className="sticky top-0 z-30 bg-gradient-to-r from-slate-800/95 via-slate-800/90 to-slate-900/95 backdrop-blur-md border-b border-slate-700/50 shadow-lg">
       <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4">
         
-        {/* Mobile Menu Indicator */}
         <div className="lg:hidden w-8" />
         
-        {/* Search Bar with Results */}
+        {/* Search Bar */}
         <div className="flex-1 max-w-md sm:max-w-lg lg:max-w-md xl:max-w-lg relative" ref={searchRef}>
           <form onSubmit={handleSearchSubmit} className="relative group">
             <FaSearch className={`absolute left-3 top-1/2 -translate-y-1/2 transition-colors duration-200 ${
@@ -434,7 +363,6 @@ export default function Topbar() {
               className="w-full bg-slate-900/80 backdrop-blur-sm text-white border border-slate-700 rounded-xl pl-10 pr-24 py-2.5 text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all duration-200"
             />
             
-            {/* Keyboard shortcut hint */}
             <div className="absolute right-3 top-1/2 -translate-y-1/2 hidden sm:flex items-center gap-1 text-xs text-slate-500">
               <span className="bg-slate-700 px-1.5 py-0.5 rounded">⌘</span>
               <span className="bg-slate-700 px-1.5 py-0.5 rounded">K</span>
@@ -456,7 +384,7 @@ export default function Topbar() {
 
           {/* Search Results Dropdown */}
           {showSearchResults && (
-            <div className="absolute top-full left-0 right-0 mt-2 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-50 animate-slideDown max-h-[80vh] overflow-y-auto">
+            <div className="absolute top-full left-0 right-0 mt-2 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-50 max-h-[80vh] overflow-y-auto">
               {/* Filter Tabs */}
               <div className="sticky top-0 bg-slate-800 border-b border-slate-700 px-2 py-2 flex gap-1 overflow-x-auto">
                 {['all', 'vps', 'invoice', 'user', 'document'].map((filter) => (
@@ -469,12 +397,11 @@ export default function Topbar() {
                         : 'text-slate-400 hover:text-slate-300 hover:bg-slate-700/50'
                     }`}
                   >
-                    {filter === 'all' ? 'All Results' : filter.charAt(0).toUpperCase() + filter.slice(1) + 's'}
+                    {filter === 'all' ? 'All' : filter.charAt(0).toUpperCase() + filter.slice(1)}
                   </button>
                 ))}
               </div>
 
-              {/* Search Results Content */}
               <div className="max-h-[calc(80vh-100px)] overflow-y-auto">
                 {isSearching ? (
                   <div className="flex items-center justify-center py-12">
@@ -484,18 +411,15 @@ export default function Topbar() {
                   <div className="flex flex-col items-center justify-center py-12 text-slate-500">
                     <FaSearch size={48} className="mb-3 opacity-30" />
                     <p className="text-sm">No results found for "{searchQuery}"</p>
-                    <p className="text-xs mt-1">Try different keywords or check your spelling</p>
                   </div>
                 ) : searchResults.length > 0 ? (
                   <>
-                    {/* Search Stats */}
                     <div className="px-4 py-2 bg-slate-800/50 border-b border-slate-700">
                       <p className="text-xs text-slate-500">
-                        Found {searchResults.length} result{searchResults.length !== 1 ? 's' : ''} for "{searchQuery}"
+                        Found {searchResults.length} result{searchResults.length !== 1 ? 's' : ''}
                       </p>
                     </div>
                     
-                    {/* Results List */}
                     {searchResults.map((result) => (
                       <SearchResultItem 
                         key={result.id} 
@@ -539,35 +463,12 @@ export default function Topbar() {
                   </>
                 ) : null}
               </div>
-
-              {/* Footer Actions */}
-              {searchResults.length > 0 && (
-                <div className="sticky bottom-0 bg-slate-800 border-t border-slate-700 px-4 py-2 flex justify-between items-center text-xs text-slate-500">
-                  <div className="flex items-center gap-3">
-                    <span>↑↓ Navigate</span>
-                    <span>↵ Select</span>
-                    <span>Esc Close</span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      saveRecentSearch(searchQuery);
-                      router.push(`/search?q=${encodeURIComponent(searchQuery)}`);
-                      setShowSearchResults(false);
-                    }}
-                    className="text-indigo-400 hover:text-indigo-300"
-                  >
-                    View all results →
-                  </button>
-                </div>
-              )}
             </div>
           )}
         </div>
 
         {/* Right Side Actions */}
         <div className="flex items-center gap-2 sm:gap-4">
-      
-
           {/* Notifications */}
           <div className="relative" ref={notificationsRef}>
             <button
@@ -576,7 +477,6 @@ export default function Topbar() {
                 setShowUserMenu(false);
               }}
               className="relative p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-700/50 transition-all duration-200"
-              aria-label="Notifications"
             >
               <FaBell size={18} />
               {unreadCount > 0 && (
@@ -588,7 +488,7 @@ export default function Topbar() {
 
             {/* Notifications Dropdown */}
             {showNotifications && (
-              <div className="absolute right-0 mt-3 w-80 sm:w-96 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden z-50 animate-slideDown">
+              <div className="absolute right-0 mt-3 w-80 sm:w-96 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden z-50">
                 <div className="flex items-center justify-between p-4 border-b border-slate-700 bg-slate-800/50">
                   <h3 className="text-white font-semibold flex items-center gap-2">
                     <FaBell size={14} className="text-indigo-400" />
@@ -599,14 +499,14 @@ export default function Topbar() {
                       </span>
                     )}
                   </h3>
-                  <button 
-                    onClick={() => {
-                      setNotifications(notifications.map(n => ({ ...n, read: true })));
-                    }}
-                    className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
-                  >
-                    Mark all read
-                  </button>
+                  {unreadCount > 0 && (
+                    <button 
+                      onClick={markAllNotificationsAsRead}
+                      className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                    >
+                      Mark all read
+                    </button>
+                  )}
                 </div>
                 
                 <div className="max-h-96 overflow-y-auto divide-y divide-slate-700/50">
@@ -624,6 +524,9 @@ export default function Topbar() {
                       <div
                         key={notif.id}
                         onClick={() => {
+                          if (!notif.read) {
+                            markNotificationAsRead(notif.id);
+                          }
                           if (notif.link) router.push(notif.link);
                           setShowNotifications(false);
                         }}
@@ -639,7 +542,7 @@ export default function Topbar() {
                                 {notif.title}
                               </p>
                               <span className="text-xs text-slate-500 flex-shrink-0">
-                                {notif.time}
+                                {formatTimeAgo(notif.created_at)}
                               </span>
                             </div>
                             <p className="text-slate-400 text-xs line-clamp-2">
@@ -654,7 +557,10 @@ export default function Topbar() {
                 
                 <div className="p-3 text-center border-t border-slate-700 bg-slate-800/50">
                   <button 
-                    onClick={() => router.push("/notifications")}
+                    onClick={() => {
+                      router.push("/notifications");
+                      setShowNotifications(false);
+                    }}
                     className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
                   >
                     View all notifications
@@ -672,42 +578,49 @@ export default function Topbar() {
                 setShowNotifications(false);
               }}
               className="flex items-center gap-2 sm:gap-3 p-1.5 rounded-xl hover:bg-slate-700/50 transition-all duration-200 group"
-              aria-label="User menu"
             >
               <div className="relative">
                 <div className="w-9 h-9 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-lg">
-                  {user?.name?.charAt(0).toUpperCase() || 'A'}
+                  {firstChar}
                 </div>
                 <div className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-green-500 border-2 border-slate-800 rounded-full"></div>
               </div>
               
               <div className="hidden sm:block text-left">
-                <p className="text-white text-sm font-medium">{user?.name || 'User'}</p>
-                <p className="text-slate-500 text-xs">{user?.email || 'user@example.com'}</p>
+                <p className="text-white text-sm font-medium truncate max-w-[120px]">
+                  {isLoadingProfile ? 'Loading...' : displayName}
+                </p>
+                <p className="text-slate-500 text-xs truncate max-w-[120px]">
+                  {displayEmail}
+                </p>
               </div>
               <FaChevronDown className={`hidden sm:block text-slate-400 text-xs transition-transform duration-200 ${showUserMenu ? 'rotate-180' : ''}`} />
             </button>
 
             {/* User Dropdown Menu */}
             {showUserMenu && (
-              <div className="absolute right-0 mt-3 w-72 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden z-50 animate-slideDown">
+              <div className="absolute right-0 mt-3 w-72 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden z-50">
                 <div className="p-4 border-b border-slate-700 bg-gradient-to-r from-slate-800 to-slate-800/50">
                   <div className="flex items-center gap-3">
                     <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-lg shadow-lg">
-                      {user?.name?.charAt(0).toUpperCase() || 'U'}
+                      {firstChar}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-white font-semibold truncate">{user?.name || 'User'}</p>
-                      <p className="text-slate-400 text-xs truncate">{user?.email || 'user@example.com'}</p>
+                      <p className="text-white font-semibold truncate">{displayName}</p>
+                      <p className="text-slate-400 text-xs truncate">{displayEmail}</p>
                       <div className="flex items-center gap-2 mt-1">
                         <span className="inline-flex items-center gap-1 text-xs bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-full">
                           <div className="w-1.5 h-1.5 bg-emerald-400 rounded-full"></div>
-                          Active
+                          {userProfile?.verified ? 'Verified' : 'Active'}
                         </span>
-                        <span className="text-xs text-slate-500">
-                          Wallet: ₹{user?.wallet_balance?.toLocaleString() || '0'}
+                        <span className="text-xs text-slate-500 flex items-center gap-1">
+                          <FaWallet className="w-3 h-3" />
+                          {formatCurrency(userProfile?.wallet_balance || 0)}
                         </span>
                       </div>
+                      {userProfile?.company && (
+                        <p className="text-xs text-slate-500 mt-1 truncate">{userProfile.company}</p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -759,23 +672,56 @@ export default function Topbar() {
           </div>
         </div>
       </div>
-
-      <style jsx>{`
-        @keyframes slideDown {
-          from {
-            opacity: 0;
-            transform: translateY(-10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-        .animate-slideDown {
-          animation: slideDown 0.2s ease-out;
-        }
-      `}</style>
     </div>
+  );
+}
+
+// Search Result Item Component
+function SearchResultItem({ result, onClose }: { result: SearchResultType; onClose: () => void }) {
+  const router = useRouter();
+  
+  const getIcon = () => {
+    switch(result.type) {
+      case 'vps': return <FaServer className="text-indigo-400" />;
+      case 'invoice': return <FaCreditCard className="text-green-400" />;
+      case 'user': return <FaUserCircle className="text-blue-400" />;
+      case 'document': return <FaFileAlt className="text-yellow-400" />;
+      default: return <FaTag className="text-purple-400" />;
+    }
+  };
+  
+  const getTypeColor = () => {
+    switch(result.type) {
+      case 'vps': return 'bg-indigo-500/20 text-indigo-400';
+      case 'invoice': return 'bg-green-500/20 text-green-400';
+      case 'user': return 'bg-blue-500/20 text-blue-400';
+      case 'document': return 'bg-yellow-500/20 text-yellow-400';
+      default: return 'bg-purple-500/20 text-purple-400';
+    }
+  };
+  
+  return (
+    <button
+      onClick={() => {
+        router.push(result.link);
+        onClose();
+      }}
+      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-700/50 transition-all group"
+    >
+      <div className="w-8 h-8 bg-slate-700 rounded-lg flex items-center justify-center group-hover:scale-110 transition-transform">
+        {getIcon()}
+      </div>
+      <div className="flex-1 text-left">
+        <p className="text-white text-sm font-medium group-hover:text-indigo-400 transition-colors">
+          {result.title}
+        </p>
+        <p className="text-slate-400 text-xs">{result.description}</p>
+      </div>
+      <span className={`text-xs px-2 py-1 rounded ${getTypeColor()}`}>
+        {result.type.toUpperCase()}
+      </span>
+      <FaChevronRight className="text-slate-600 group-hover:text-indigo-400 transition-colors text-xs" />
+    </button>
   );
 }
 

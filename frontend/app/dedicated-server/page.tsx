@@ -130,7 +130,7 @@ export default function DedicatedServersPage() {
   // Fetch dedicated servers
   const fetchDedicatedServers = useCallback(async () => {
     try {
-      const response = await api.get("/dedicated-servers");
+      const response = await api.get("/dedicated-servers/user/me");
       const data = response.data;
       
       let serversList: DedicatedServer[] = [];

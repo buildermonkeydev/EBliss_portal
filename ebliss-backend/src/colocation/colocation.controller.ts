@@ -35,7 +35,7 @@ export class ColocationController {
   }
 
   @Get()
-  @Roles('admin', 'super_admin', 'technical', 'customer')
+  @Roles('admin', 'super_admin', 'technical')
   findAll(
     @Query('skip', new DefaultValuePipe(0), ParseIntPipe) skip: number,
     @Query('take', new DefaultValuePipe(20), ParseIntPipe) take: number,
