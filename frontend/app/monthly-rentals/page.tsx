@@ -9,6 +9,8 @@ import {
   Rocket, TrendingUp, Award, Star,
   Loader2, AlertCircle, CheckCircle,
   Calendar, Lock, Clock, ShieldCheck, Zap,
+  Wallet, ArrowRight, ExternalLink, RefreshCw,
+  CreditCard, Plus, X,
 } from "lucide-react";
 import { BillingToggle } from "../components/deploy/BillingToggle";
 import { PlanCard } from "../components/deploy/PlanCard";
@@ -79,12 +81,19 @@ export default function DeployPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showOrderSummary, setShowOrderSummary] = useState(false);
+  const [showAddFundsModal, setShowAddFundsModal] = useState(false);
+  const [addFundsAmount, setAddFundsAmount] = useState<number>(500);
+  const [isAddingFunds, setIsAddingFunds] = useState(false);
 
   const [locations, setLocations] = useState<Location[]>([]);
   const [operatingSystems, setOperatingSystems] = useState<OS[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  
+  // Wallet state
+  const [walletBalance, setWalletBalance] = useState<number>(0);
+  const [isLoadingBalance, setIsLoadingBalance] = useState(true);
+  const [insufficientBalance, setInsufficientBalance] = useState(false);
 
-  //  billingCycle typed as BillingCycle — TypeScript error resolved
   const [config, setConfig] = useState<DeploymentConfig>({
     planId: "starter",
     locationId: "",
@@ -94,7 +103,18 @@ export default function DeployPage() {
     billingCycle: "monthly",
   });
 
-  useEffect(() => { fetchData(); }, []);
+  useEffect(() => { 
+    fetchData(); 
+    fetchWalletBalance();
+  }, []);
+
+  // Refresh balance periodically
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchWalletBalance();
+    }, 30000); // Every 30 seconds
+    return () => clearInterval(interval);
+  }, []);
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -147,15 +167,22 @@ export default function DeployPage() {
     }
   };
 
+  const fetchWalletBalance = async () => {
+    setIsLoadingBalance(true);
+    try {
+      const res = await api.get("/wallet/balance");
+      setWalletBalance(parseFloat(res.data.balance) || 0);
+    } catch (error) {
+      console.error("Failed to fetch wallet balance:", error);
+    } finally {
+      setIsLoadingBalance(false);
+    }
+  };
+
   const selectedPlan     = plans.find((p) => p.id === config.planId)!;
   const selectedLocation = locations.find((l) => l.id === config.locationId);
   const selectedOS       = operatingSystems.find((os) => os.id === config.osId);
 
-  /**
-   * Pricing engine — all 4 billing cycles.
-   * cycleMultiplier returns the correct month-count × discount factor.
-   * e.g. quarterly = 3 × 0.95 = 2.85× the monthly base price.
-   */
   const calculateTotal = () => {
     const mult = cycleMultiplier(config.billingCycle);
 
@@ -172,60 +199,145 @@ export default function DeployPage() {
   };
 
   const pricing = calculateTotal();
+  const hasEnoughBalance = walletBalance >= pricing.total;
+  const shortfall = pricing.total - walletBalance;
 
-const handleDeploy = async () => {
-  if (!selectedLocation || !selectedOS) {
-    setError("Please select a location and operating system");
-    return;
-  }
+  // Check balance when pricing changes
+  useEffect(() => {
+    setInsufficientBalance(!hasEnoughBalance && !isLoadingBalance);
+  }, [hasEnoughBalance, isLoadingBalance]);
 
-  setIsDeploying(true);
-  setError(null);
+  const handleAddFunds = async () => {
+    if (addFundsAmount < 100) {
+      setError("Minimum amount is ₹100");
+      setTimeout(() => setError(null), 3000);
+      return;
+    }
 
-  try {
-   const deployData = {
-  hostname: `${selectedPlan.name.toLowerCase()}-${Date.now()}`,
-  location: config.locationId,
-  os: selectedOS.id,  // This should be the full path like 'local:vztmpl/ubuntu-22.04.tar.zst' or 'local:iso/ubuntu.iso'
-  cores: selectedPlan.specs.cpu,
-  memory: selectedPlan.specs.ram * 1024,
-  disk: selectedPlan.specs.disk,
-  password: "auto-generated",
-  sshKeyId: null,
-};
-    let response;
-    
-    // Try multiple possible endpoints
+    setIsAddingFunds(true);
+    setError(null);
+
     try {
-      response = await api.post("/proxmox/deploy", deployData);
-    } catch (firstError: any) {
-      console.log("First endpoint failed, trying alternative...");
-      
-      // Try alternative endpoint
-      try {
-        response = await api.post("/vms/deploy", deployData);
-      } catch (secondError: any) {
-        console.log("Second endpoint failed, trying third...");
-        
-        // Try third alternative
-        response = await api.post("/deploy", deployData);
+      const orderResponse = await api.post("/payment/create-order", {
+        amount: addFundsAmount,
+        currency: "INR",
+      });
+
+      const { order, key_id } = orderResponse.data;
+
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.async = true;
+      document.body.appendChild(script);
+
+      script.onload = () => {
+        const options = {
+          key: key_id,
+          amount: order.amount,
+          currency: order.currency,
+          name: "eBliss Cloud",
+          description: `Add ₹${addFundsAmount} to wallet`,
+          order_id: order.id,
+          handler: async (response: any) => {
+            try {
+              const verifyResponse = await api.post("/payment/verify", {
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              });
+
+              if (verifyResponse.data.success) {
+                await fetchWalletBalance();
+                setShowAddFundsModal(false);
+                setAddFundsAmount(500);
+                setSuccess("Funds added successfully! You can now deploy your VM.");
+                setTimeout(() => setSuccess(null), 5000);
+              }
+            } catch (err: any) {
+              setError(err.response?.data?.message || "Payment verification failed");
+            } finally {
+              setIsAddingFunds(false);
+            }
+          },
+          theme: { color: "#4f46e5" },
+          modal: {
+            ondismiss: () => {
+              setIsAddingFunds(false);
+            },
+          },
+        };
+
+        const razorpay = new (window as any).Razorpay(options);
+        razorpay.open();
+      };
+
+      script.onerror = () => {
+        setError("Failed to load payment gateway");
+        setIsAddingFunds(false);
+      };
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Failed to create payment order");
+      setIsAddingFunds(false);
+    }
+  };
+
+  const handleDeploy = async () => {
+    if (!selectedLocation || !selectedOS) {
+      setError("Please select a location and operating system");
+      return;
+    }
+
+    if (!hasEnoughBalance) {
+      setInsufficientBalance(true);
+      setError(`Insufficient balance. You need ₹${shortfall.toLocaleString('en-IN')} more.`);
+      return;
+    }
+
+    setIsDeploying(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const deployData = {
+        hostname: `${selectedPlan.name.toLowerCase()}-${Date.now()}`,
+        location: config.locationId,
+        os: selectedOS.id,
+        cores: selectedPlan.specs.cpu,
+        memory: selectedPlan.specs.ram * 1024,
+        disk: selectedPlan.specs.disk,
+        password: "auto-generated",
+        sshKeyId: null,
+        hourlyRate: pricing.total / 720, // Approximate hourly rate
+        monthlyRate: pricing.total,
+        bandwidth: config.bandwidth,
+        enableBackup: false,
+        enableMonitoring: true,
+      };
+
+      const response = await api.post("/vms/deploy", deployData);
+
+      if (response?.data?.success === false) {
+        throw new Error(response.data.message || "Deployment failed");
       }
-    }
 
-    if (response?.data?.success === false) {
-      throw new Error(response.data.message || "Deployment failed");
+      // Refresh balance after deployment
+      await fetchWalletBalance();
+      
+      setSuccess(`${selectedPlan.name} deployed successfully! Redirecting...`);
+      setTimeout(() => router.push("/vps"), 2000);
+      
+    } catch (err: any) {
+      console.error("Deployment error:", err);
+      setError(err.response?.data?.message || err.message || "Failed to deploy VM");
+    } finally {
+      setIsDeploying(false);
     }
+  };
 
-    setSuccess(`${selectedPlan.name} deployed successfully! Redirecting...`);
-    setTimeout(() => router.push("/vps"), 2000);
-    
-  } catch (err: any) {
-    console.error("Deployment error:", err);
-    setError(err.response?.data?.message || err.message || "Failed to deploy VM");
-  } finally {
-    setIsDeploying(false);
-  }
-};
+  const formatCurrency = (amount: number) => {
+    return `₹${amount.toLocaleString('en-IN')}`;
+  };
+
   // ── Loading ────────────────────────────────────────────────────────────────
   if (isLoading) {
     return (
@@ -252,11 +364,55 @@ const handleDeploy = async () => {
       <div className="flex-1 flex flex-col">
         <Topbar />
 
+        {/* Wallet Balance Bar */}
+        <div className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800">
+          <div className="max-w-7xl mx-auto px-4 sm:px-8 lg:px-14 py-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <Wallet className="w-5 h-5 text-emerald-400" />
+                  <span className="text-slate-400 text-sm">Wallet Balance:</span>
+                  {isLoadingBalance ? (
+                    <Loader2 className="w-4 h-4 text-slate-500 animate-spin" />
+                  ) : (
+                    <span className={`text-lg font-bold ${hasEnoughBalance ? 'text-emerald-400' : 'text-amber-400'}`}>
+                      {formatCurrency(walletBalance)}
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={fetchWalletBalance}
+                  className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-500 hover:text-slate-300 transition"
+                  title="Refresh balance"
+                >
+                  <RefreshCw className="w-4 h-4" />
+                </button>
+              </div>
+              
+              <div className="flex items-center gap-3">
+                {!hasEnoughBalance && !isLoadingBalance && (
+                  <div className="flex items-center gap-2 text-amber-400 text-sm">
+                    <AlertCircle className="w-4 h-4" />
+                    <span>Shortfall: {formatCurrency(shortfall)}</span>
+                  </div>
+                )}
+                <button
+                  onClick={() => router.push("/billing")}
+                  className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Funds
+                  <ExternalLink className="w-3 h-3 opacity-70" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* Ambient background */}
         <div className="fixed inset-0 pointer-events-none overflow-hidden">
           <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[900px] h-[500px] bg-indigo-600/4 rounded-full blur-[140px]" />
           <div className="absolute bottom-0 right-0 w-[600px] h-[400px] bg-purple-600/4 rounded-full blur-[120px]" />
-          {/* Subtle dot grid */}
           <div
             className="absolute inset-0 opacity-[0.025]"
             style={{
@@ -305,13 +461,42 @@ const handleDeploy = async () => {
           {error && (
             <div className="flex items-center gap-3 p-4 rounded-2xl bg-red-500/8 border border-red-500/20 text-red-400 text-sm">
               <AlertCircle className="w-4 h-4 flex-shrink-0" />
-              {error}
+              <span className="flex-1">{error}</span>
+              <button onClick={() => setError(null)} className="hover:text-red-300">
+                <X className="w-4 h-4" />
+              </button>
             </div>
           )}
+          
           {success && (
             <div className="flex items-center gap-3 p-4 rounded-2xl bg-emerald-500/8 border border-emerald-500/20 text-emerald-400 text-sm">
               <CheckCircle className="w-4 h-4 flex-shrink-0" />
-              {success}
+              <span className="flex-1">{success}</span>
+              <button onClick={() => setSuccess(null)} className="hover:text-emerald-300">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Insufficient Balance Warning */}
+          {insufficientBalance && !error && (
+            <div className="flex items-center gap-4 p-5 rounded-2xl bg-amber-500/8 border border-amber-500/20">
+              <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-amber-400 font-medium mb-1">Insufficient Balance</p>
+                <p className="text-amber-400/80 text-sm">
+                  You need {formatCurrency(shortfall)} more to deploy this VM. 
+                  Add funds to your wallet to continue.
+                </p>
+              </div>
+              <button
+                onClick={() => router.push("/billing")}
+                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-medium transition"
+              >
+                <Plus className="w-4 h-4" />
+                Add Funds
+                <ArrowRight className="w-4 h-4" />
+              </button>
             </div>
           )}
 
@@ -376,26 +561,26 @@ const handleDeploy = async () => {
             <div className="flex flex-col items-center gap-1">
               <div className="flex items-baseline gap-2">
                 <span className="text-5xl font-black text-white tabular-nums">
-                  ₹{pricing.total.toLocaleString("en-IN")}
+                  {formatCurrency(pricing.total)}
                 </span>
                 <span className="text-slate-500 text-sm font-medium self-end pb-1">
                   {cycleSuffix(config.billingCycle)}
                 </span>
               </div>
               <span className="text-[11px] text-slate-600">
-                ₹{pricing.subtotal.toLocaleString("en-IN")} + 18% GST · {selectedPlan.name} plan
+                {formatCurrency(pricing.subtotal)} + 18% GST · {selectedPlan.name} plan
               </span>
             </div>
 
             {/* Deploy button */}
             <button
               onClick={handleDeploy}
-              disabled={isDeploying || !!success}
+              disabled={isDeploying || !!success || !hasEnoughBalance}
               className={`
                 relative group px-16 py-4 rounded-2xl font-bold text-base
                 transition-all duration-300 overflow-hidden
                 disabled:opacity-50 disabled:cursor-not-allowed
-                ${!isDeploying && !success ? "hover:scale-105 active:scale-95" : ""}
+                ${!isDeploying && !success && hasEnoughBalance ? "hover:scale-105 active:scale-95" : ""}
               `}
             >
               {/* Gradient background */}
@@ -407,15 +592,41 @@ const handleDeploy = async () => {
               <div className="absolute inset-0 rounded-2xl ring-1 ring-white/10" />
 
               <span className="relative flex items-center gap-3 text-white">
-  {isDeploying ? (
-    <>Deploying your VM…</>
-  ) : success ? (
-    <>Deployed!</>
-  ) : (
-    <>Deploy Now</>
-  )}
-</span>
+                {isDeploying ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Deploying your VM…
+                  </>
+                ) : success ? (
+                  <>
+                    <CheckCircle className="w-5 h-5" />
+                    Deployed!
+                  </>
+                ) : !hasEnoughBalance ? (
+                  <>
+                    <AlertCircle className="w-5 h-5" />
+                    Insufficient Balance
+                  </>
+                ) : (
+                  <>
+                    <Rocket className="w-5 h-5" />
+                    Deploy Now
+                  </>
+                )}
+              </span>
             </button>
+
+            {/* Quick Add Funds (shown when balance is low) */}
+            {!hasEnoughBalance && !isLoadingBalance && (
+              <button
+                onClick={() => router.push("/billing")}
+                className="flex items-center gap-2 px-6 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm font-medium transition border border-slate-700"
+              >
+                <CreditCard className="w-4 h-4" />
+                Add funds to continue
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            )}
 
             {/* Trust strip */}
             <div className="flex flex-wrap justify-center items-center gap-x-5 gap-y-2 text-[11px] text-slate-600 font-medium">
@@ -452,7 +663,6 @@ function StepSection({
 }) {
   return (
     <section className="space-y-6">
-      {/* Section header */}
       <div className="flex items-center gap-3">
         <span className="text-[9px] font-black tabular-nums tracking-[0.3em] text-indigo-500 uppercase">
           {step}
