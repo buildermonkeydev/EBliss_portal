@@ -162,18 +162,12 @@ export function UsersTable({
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-48">
-                    <DropdownMenuItem onClick={() => onView(user)}>
-                      <Eye className="h-4 w-4 mr-2" />
-                      View Details
-                    </DropdownMenuItem>
+                  
                     <DropdownMenuItem onClick={() => onEdit(user)}>
                       <Edit className="h-4 w-4 mr-2" />
                       Edit User
                     </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => onCredit(user)}>
-                      <CreditCard className="h-4 w-4 mr-2" />
-                      Credit Wallet
-                    </DropdownMenuItem>
+                    
                     {!user.verified && (
                       <DropdownMenuItem onClick={() => onVerify(user)}>
                         <CheckCircle className="h-4 w-4 mr-2 text-green-600" />

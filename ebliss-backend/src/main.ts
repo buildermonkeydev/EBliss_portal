@@ -10,7 +10,7 @@ async function bootstrap() {
   app.enableCors({
     origin: [
       'http://localhost:3000',
-      'http://localhost:3001',
+      'http://localhost:3002',
       'https://admin.buildermonkey.com',
       'https://nexus.buildermonkey.com',
       'https://buildermonkey.com',

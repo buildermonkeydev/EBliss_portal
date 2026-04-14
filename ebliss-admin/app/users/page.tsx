@@ -515,44 +515,6 @@ export default function UsersPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Credit Wallet Dialog */}
-      <Dialog open={creditDialog} onOpenChange={setCreditDialog}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Credit Wallet</DialogTitle>
-            <DialogDescription>
-              Add funds to {selectedUser?.full_name || selectedUser?.email}'s wallet
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div>
-              <label className="text-sm font-medium mb-2 block">Amount (USD)</label>
-              <Input
-                type="number"
-                placeholder="Enter amount"
-                value={creditAmount}
-                onChange={(e) => setCreditAmount(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="text-sm font-medium mb-2 block">Reason (Optional)</label>
-              <textarea
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="e.g., Promotional credit, Refund, etc."
-                value={creditReason}
-                onChange={(e) => setCreditReason(e.target.value)}
-                rows={3}
-              />
-            </div>
-          </div>
-          <div className="flex justify-end gap-3 mt-4">
-            <Button variant="outline" onClick={() => setCreditDialog(false)}>Cancel</Button>
-            <Button onClick={handleCreditWallet} className="bg-blue-600">Add Credit</Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Suspend User Dialog */}
       <Dialog open={suspendDialog} onOpenChange={setSuspendDialog}>
         <DialogContent>
           <DialogHeader>

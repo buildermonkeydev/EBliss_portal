@@ -141,12 +141,12 @@ export default function Sidebar() {
         </DropdownMenu>
 
         {/* Monitoring */}
-        <MenuItem
+        {/* <MenuItem
           href="/monitoring"
           icon={<FaChartLine />}
           label="Monitoring"
           active={pathname === "/monitoring"}
-        />
+        /> */}
 
         {/* Billing */}
         <DropdownMenu
