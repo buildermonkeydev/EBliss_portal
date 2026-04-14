@@ -1,4 +1,4 @@
-import { Controller, Post,Get, Body, UseGuards, Req, HttpCode, HttpStatus , Query , Param } from '@nestjs/common';
+import { Controller, Post, Get, Body, UseGuards, Req, HttpCode, HttpStatus, Query, Param, Logger } from '@nestjs/common';
 import { ProxmoxService } from './proxmox.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { PrismaService } from '../prisma/prisma.service';
@@ -22,216 +22,254 @@ interface DeployVMDto {
 @Controller('proxmox')
 @UseGuards(JwtAuthGuard)
 export class ProxmoxController {
+    private readonly logger = new Logger(ProxmoxController.name);
+
   constructor(
     private readonly proxmoxService: ProxmoxService,
     private readonly prisma: PrismaService,
   ) {}
 
 @Post('deploy')
-@HttpCode(HttpStatus.CREATED)
-async deployVM(@Body() dto: any, @Req() req: any) {
-  try {
-    const vmid = Math.floor(Math.random() * 900000) + 100000;
+  @HttpCode(HttpStatus.CREATED)
+  async deployVM(@Body() dto: any, @Req() req: any) {
+    this.logger.log('=== DEPLOY VM START ===');
+    this.logger.log(`User: ${req.user.id}, Hostname: ${dto.hostname}`);
     
-    const isLXC = dto.os?.includes('vztmpl');
-    const isISO = dto.os?.includes('.iso');
-    
-    let result;
-    let vmConfig: any = {};
-    
-    const userId = parseInt(req.user.id);
-    
-    // Get or create POP first
-    let pop = await this.prisma.pop.findFirst();
-    if (!pop) {
-      pop = await this.prisma.pop.create({
-        data: {
-          name: 'Default Data Center',
-          city: 'Frankfurt',
-          country: 'Germany',
-          active: true,
+    try {
+      const vmid = Math.floor(Math.random() * 900000) + 100000;
+      
+      const isLXC = dto.os?.includes('vztmpl') || dto.os?.includes('tar.zst') || dto.os?.includes('tar.gz');
+      const isISO = dto.os?.includes('.iso');
+      
+      this.logger.log(`Template type: ${isLXC ? 'LXC' : isISO ? 'ISO' : 'Cloud-Init/QEMU'}`);
+      
+      let result;
+      const userId = parseInt(req.user.id);
+      
+      // Get or create POP first
+      let pop = await this.prisma.pop.findFirst();
+      if (!pop) {
+        pop = await this.prisma.pop.create({
+          data: {
+            name: 'Default Data Center',
+            city: 'Frankfurt',
+            country: 'Germany',
+            active: true,
+          },
+        });
+        this.logger.log(`Created default POP with ID: ${pop.id}`);
+      }
+      
+      // Get or create node
+      let node = await this.prisma.node.findFirst({
+        where: { hostname: dto.location },
+      });
+      
+      if (!node) {
+        node = await this.prisma.node.create({
+          data: {
+            hostname: dto.location,
+            pop_id: pop.id,
+            api_url: `https://${dto.location}:8006`,
+            api_token_id: process.env.PROXMOX_TOKEN_ID || '',
+            api_token_secret: process.env.PROXMOX_TOKEN_SECRET || '',
+            max_vcpu: 64,
+            max_ram_gb: 256,
+            max_storage_gb: 2000,
+            status: 'active',
+            ip_address: dto.location,
+          },
+        });
+        this.logger.log(`Created node with ID: ${node.id}`);
+      }
+      
+      const ramGb = dto.memory / 1024;
+      const diskGb = dto.disk;
+      const cores = dto.cores;
+      const hourlyRate = dto.hourlyRate || this.calculateHourlyRate(cores, ramGb, diskGb);
+      const monthlyRate = dto.monthlyRate || hourlyRate * 730;
+      
+      // ✅ Create or find plan
+      let plan = await this.prisma.plan.findFirst({
+        where: {
+          vcpu: cores,
+          ram_gb: ramGb,
+          ssd_gb: diskGb,
         },
       });
-    }
-    
-    // Get or create node
-    let node = await this.prisma.node.findFirst({
-      where: { hostname: dto.location },
-    });
-    
-    if (!node) {
-      node = await this.prisma.node.create({
-        data: {
-          hostname: dto.location,
-          pop_id: pop.id,
-          api_url: `https://${dto.location}:8006`,
-          api_token_id: process.env.PROXMOX_TOKEN_ID || '',
-          api_token_secret: process.env.PROXMOX_TOKEN_SECRET || '',
-          max_vcpu: 64,
-          max_ram_gb: 256,
-          max_storage_gb: 2000,
-          status: 'active',
-        },
-      });
-    }
-    
-    // Get or create plan
-    let plan = await this.prisma.plan.findFirst({
-      where: {
-        vcpu: dto.cores,
-        ram_gb: dto.memory / 1024,
-        ssd_gb: dto.disk,
-      },
-    });
-    
-    if (!plan) {
-      plan = await this.prisma.plan.create({
-        data: {
-          name: `Custom ${dto.cores} vCPU, ${dto.memory / 1024} GB RAM`,
-          type: 'hourly',
-          vcpu: dto.cores,
-          ram_gb: dto.memory / 1024,
-          ssd_gb: dto.disk,
-          bandwidth_gb: dto.bandwidth || 5000,
-          hourly_price: this.calculateHourlyRate(dto.cores, dto.memory / 1024, dto.disk),
-          is_active: true,
-        },
-      });
-    }
-    
-    if (isLXC) {
-      result = await this.proxmoxService.createLXC(dto.location, {
-        vmid: vmid,
-        hostname: dto.hostname,
-        cores: dto.cores,
-        memory: dto.memory,
-        disk: dto.disk,
-        ostemplate: dto.os,
-        password: dto.password,
-        sshkeys: dto.sshKeyId ? await this.getSSHKeyContent(dto.sshKeyId, userId) : undefined,
-        start: 1,
-        onboot: 1,
+      
+      if (!plan) {
+        this.logger.log(`Creating new plan: ${cores}vCPU, ${ramGb}GB RAM, ${diskGb}GB SSD`);
+        
+        plan = await this.prisma.plan.create({
+          data: {
+            name: `Custom ${cores} vCPU, ${ramGb} GB RAM, ${diskGb} GB SSD`,
+            type: 'hourly',
+            vcpu: cores,
+            ram_gb: ramGb,
+            ssd_gb: diskGb,
+            bandwidth_gb: dto.bandwidth || 5000,
+            hourly_price: hourlyRate,
+            monthly_price: monthlyRate,
+            is_active: true,
+          },
+        });
+        this.logger.log(`✅ Plan created with ID: ${plan.id}`);
+      } else {
+        this.logger.log(`✅ Using existing plan with ID: ${plan.id}`);
+      }
+      
+      // ✅ CRITICAL: Verify plan exists in database before using it
+      const planVerify = await this.prisma.plan.findUnique({
+        where: { id: plan.id }
       });
       
-      vmConfig = {
-        user_id: userId,
-        node_id: node.id,
-        plan_id: plan.id,
-        proxmox_vmid: vmid,
-        name: dto.hostname,
-        hostname: dto.hostname,
-        vcpu: dto.cores,
-        ram_gb: dto.memory / 1024,
-        ssd_gb: dto.disk,
-        plan_type: 'hourly',
-        status: 'creating',
-        hourly_rate: this.calculateHourlyRate(dto.cores, dto.memory / 1024, dto.disk),
-        ssh_key_ids: dto.sshKeyId ? [parseInt(dto.sshKeyId)] : [],
-      };
+      if (!planVerify) {
+        throw new Error(`Plan with ID ${plan.id} does not exist in database`);
+      }
       
-    } else if (isISO) {
-      result = await this.proxmoxService.createQEMU(dto.location, {
-        vmid: vmid,
-        name: dto.hostname,
-        cores: dto.cores,
-        memory: dto.memory,
-        disk: dto.disk,
-        iso: dto.os,
-        password: dto.password,
-        sshkeys: dto.sshKeyId ? await this.getSSHKeyContent(dto.sshKeyId, userId) : undefined,
-        hostname: dto.hostname,
-        start: 1,
-        onboot: 1,
-      });
+      this.logger.log(`✅ Plan verified in database. Plan ID: ${plan.id}`);
       
-      vmConfig = {
-        user_id: userId,
-        node_id: node.id,
-        plan_id: plan.id,
-        proxmox_vmid: vmid,
-        name: dto.hostname,
-        hostname: dto.hostname,
-        vcpu: dto.cores,
-        ram_gb: dto.memory / 1024,
-        ssd_gb: dto.disk,
-        plan_type: 'hourly',
-        status: 'creating',
-        hourly_rate: this.calculateHourlyRate(dto.cores, dto.memory / 1024, dto.disk),
-        ssh_key_ids: dto.sshKeyId ? [parseInt(dto.sshKeyId)] : [],
-      };
+      // Get SSH key content if provided
+      let sshKeyContent: string | undefined;
+      if (dto.sshKeyId) {
+        const sshKey = await this.prisma.sSHKey.findFirst({
+          where: { 
+            id: parseInt(dto.sshKeyId), 
+            user_id: userId 
+          },
+        });
+        sshKeyContent = sshKey?.public_key;
+        this.logger.log(`SSH Key found: ${sshKey ? 'Yes' : 'No'}`);
+      }
       
-    } else {
-      result = await this.proxmoxService.createQEMU(dto.location, {
-        vmid: vmid,
-        name: dto.hostname,
-        cores: dto.cores,
-        memory: dto.memory,
-        disk: dto.disk,
-        password: dto.password,
-        sshkeys: dto.sshKeyId ? await this.getSSHKeyContent(dto.sshKeyId, userId) : undefined,
-        hostname: dto.hostname,
-        start: 1,
-        onboot: 1,
-      });
-      
-      vmConfig = {
-        user_id: userId,
-        node_id: node.id,
-        plan_id: plan.id,
-        proxmox_vmid: vmid,
-        name: dto.hostname,
-        hostname: dto.hostname,
-        vcpu: dto.cores,
-        ram_gb: dto.memory / 1024,
-        ssd_gb: dto.disk,
-        plan_type: 'hourly',
-        status: 'creating',
-        hourly_rate: this.calculateHourlyRate(dto.cores, dto.memory / 1024, dto.disk),
-        ssh_key_ids: dto.sshKeyId ? [parseInt(dto.sshKeyId)] : [],
-      };
-    }
-    
-    const savedVM = await this.prisma.vM.create({
-      data: vmConfig,
-    });
-    
-    await this.prisma.activityLog.create({
-      data: {
-        user_id: userId,
-        action: 'VM_DEPLOYED',
-        action_type: 'create',
-        description: `Deployed VM ${dto.hostname} with ${dto.cores} cores, ${dto.memory / 1024} GB RAM, ${dto.disk} GB storage`,
-        service_type: 'vps',
-        service_name: dto.hostname,
-        status: 'success',
-        metadata: {
+      // Deploy to Proxmox
+      if (isLXC) {
+        this.logger.log('Creating LXC container...');
+        result = await this.proxmoxService.createLXC(dto.location, {
           vmid: vmid,
-          cores: dto.cores,
+          hostname: dto.hostname,
+          cores: cores,
           memory: dto.memory,
-          disk: dto.disk,
-          os: dto.os,
+          disk: diskGb,
+          ostemplate: dto.os,
+          password: dto.password,
+          sshkeys: sshKeyContent,
+          start: 1,
+          onboot: 1,
+        });
+      } else if (isISO) {
+        this.logger.log('Creating QEMU VM with ISO...');
+        result = await this.proxmoxService.createQEMU(dto.location, {
+          vmid: vmid,
+          name: dto.hostname,
+          cores: cores,
+          memory: dto.memory,
+          disk: diskGb,
+          iso: dto.os,
+          password: dto.password,
+          sshkeys: sshKeyContent,
+          hostname: dto.hostname,
+          start: 1,
+          onboot: 1,
+        });
+      } else {
+        this.logger.log('Creating QEMU VM with Cloud-Init...');
+        result = await this.proxmoxService.createQEMU(dto.location, {
+          vmid: vmid,
+          name: dto.hostname,
+          cores: cores,
+          memory: dto.memory,
+          disk: diskGb,
+          ostemplate: dto.os,
+          password: dto.password,
+          sshkeys: sshKeyContent,
+          hostname: dto.hostname,
+          start: 1,
+          onboot: 1,
+        });
+      }
+      
+      this.logger.log(`Proxmox deployment result: ${JSON.stringify(result)}`);
+      
+      // ✅ Create VM record with VERIFIED plan_id
+      const vmConfig = {
+        user_id: userId,
+        node_id: node.id,
+        plan_id: plan.id,  // ✅ Now guaranteed to exist
+        proxmox_vmid: vmid,
+        name: dto.hostname,
+        hostname: dto.hostname,
+        vcpu: cores,
+        ram_gb: ramGb,
+        ssd_gb: diskGb,
+        plan_type: 'hourly' as const,
+        status: 'creating' as const,
+        hourly_rate: hourlyRate,
+        monthly_rate: monthlyRate,
+        ssh_key_ids: dto.sshKeyId ? [parseInt(dto.sshKeyId)] : [],
+        cloud_init_data: dto.userData ? JSON.parse(dto.userData) : null,
+      };
+      
+      this.logger.log(`Creating VM with config: ${JSON.stringify({
+        ...vmConfig,
+        cloud_init_data: vmConfig.cloud_init_data ? '[REDACTED]' : null
+      })}`);
+      
+      const savedVM = await this.prisma.vM.create({
+        data: vmConfig,
+      });
+      
+      this.logger.log(`✅ VM created in database with ID: ${savedVM.id}`);
+      
+      // Create activity log
+      await this.prisma.activityLog.create({
+        data: {
+          user_id: userId,
+          action: 'VM_DEPLOYED',
+          action_type: 'create',
+          description: `Deployed VM ${dto.hostname} with ${cores} cores, ${ramGb} GB RAM, ${diskGb} GB storage`,
+          service_type: 'vps',
+          service_name: dto.hostname,
+          status: 'success',
+          metadata: {
+            vmid: vmid,
+            cores: cores,
+            memory: dto.memory,
+            disk: diskGb,
+            os: dto.os,
+            plan_id: plan.id,
+            node_id: node.id,
+          },
         },
-      },
-    });
-    
-    return {
-      success: true,
-      message: 'VM deployed successfully',
-      data: { 
-        id: savedVM.id,
-        vmid: vmid, 
-        hostname: dto.hostname, 
-        status: 'creating' 
-      },
-    };
-  } catch (error) {
-    console.error('Deployment error:', error);
-    return {
-      success: false,
-      message: error.message || 'Failed to deploy VM',
-    };
+      });
+      
+      // Optional: Deduct from wallet if you want to handle billing here
+      // This can be done in a separate transaction or service
+      
+      return {
+        success: true,
+        message: 'VM deployed successfully',
+        data: { 
+          id: savedVM.id,
+          vmid: vmid, 
+          hostname: dto.hostname, 
+          status: 'creating',
+          plan_id: plan.id,
+        },
+      };
+    } catch (error) {
+      this.logger.error('Deployment error:', error);
+      return {
+        success: false,
+        message: error.message || 'Failed to deploy VM',
+        error: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      };
+    }
   }
-}
+
+
+
   @Get('status')
   async getVMStatus(@Query('vmid') vmid: string, @Req() req: any) {
     try {

@@ -1531,53 +1531,87 @@ async deployVM(userId: number, data: any) {
 
       const currentBalance = user.wallet_balance.toNumber();
       
-      // Calculate monthly rate
-      const monthlyRate = this.calculateMonthlyRate(data);
-      const requiredAmount = monthlyRate * 1.2; // Reserve 20% buffer
+      // 2. Calculate costs based on configuration
+      const ramGb = data.memory / 1024;
+      const ssdGb = data.disk;
+      const cores = data.cores;
+      
+      // Use provided rates or calculate them
+      const hourlyRate = data.hourlyRate || this.calculateHourlyRate(cores, ramGb, ssdGb);
+      const monthlyRate = data.monthlyRate || hourlyRate * 730;
+      
+      // 3. Determine billing type and required balance
+      // Check if user has any monthly plan VMs
+      const hasMonthlyPlan = data.planType === 'monthly' || monthlyRate > 0;
+      
+      let requiredAmount: number;
+      let billingDescription: string;
+      
+      if (hasMonthlyPlan) {
+        // For monthly plans, charge full month upfront
+        requiredAmount = monthlyRate;
+        billingDescription = `Monthly VM reservation for ${data.hostname}`;
+      } else {
+        // For hourly plans, reserve 24 hours worth (minimum)
+        requiredAmount = hourlyRate * 24;
+        billingDescription = `Hourly VM reservation (24hr min) for ${data.hostname}`;
+      }
+      
+      // Add 20% buffer for potential overages
+      const bufferAmount = requiredAmount * 0.2;
+      const totalDeduction = requiredAmount + bufferAmount;
 
-      console.log('Balance check:', { currentBalance, requiredAmount, monthlyRate });
+      console.log('Balance calculation:', { 
+        currentBalance, 
+        requiredAmount, 
+        bufferAmount,
+        totalDeduction,
+        hourlyRate,
+        monthlyRate 
+      });
 
-      if (currentBalance < requiredAmount) {
+      if (currentBalance < totalDeduction) {
         throw new BadRequestException(
-          `Insufficient balance. Required: $${requiredAmount.toFixed(2)}, Available: $${currentBalance.toFixed(2)}`
+          `Insufficient balance. Required: $${totalDeduction.toFixed(2)} (includes 20% buffer), Available: $${currentBalance.toFixed(2)}`
         );
       }
 
-      // 2. Reserve funds (deduct from wallet)
-      const newBalance = currentBalance - requiredAmount;
+      // 4. Deduct funds from wallet
+      const newBalance = currentBalance - totalDeduction;
       
       await prisma.user.update({
         where: { id: userId },
         data: { wallet_balance: newBalance }
       });
 
-      // 3. Create transaction record for the deduction
+      // 5. Create transaction record for the deduction
       const transaction = await prisma.transaction.create({
         data: {
           user_id: userId,
-          amount: -requiredAmount,
-          type: 'Usage',
+          amount: -totalDeduction,
+          type: 'reservation',
           status: 'completed',
-          description: `VM reservation for ${data.hostname}`,
+          description: billingDescription,
           balance_after: newBalance,
           metadata: {
             vm_name: data.hostname,
+            required_amount: requiredAmount,
+            buffer_amount: bufferAmount,
+            total_deducted: totalDeduction,
+            hourly_rate: hourlyRate,
             monthly_rate: monthlyRate,
-            hourly_rate: data.hourlyRate,
             cores: data.cores,
             memory: data.memory,
             disk: data.disk,
-            location: data.location
+            location: data.location,
+            billing_type: hasMonthlyPlan ? 'monthly' : 'hourly'
           }
         }
       });
 
       console.log('Transaction created:', transaction.id);
 
-      // 4. Get or create plan
-      const ramGb = data.memory / 1024;
-      const ssdGb = data.disk;
-      
+      // 6. Get or create plan in database
       let plan = await prisma.plan.findFirst({
         where: {
           vcpu: data.cores,
@@ -1591,12 +1625,12 @@ async deployVM(userId: number, data: any) {
         plan = await prisma.plan.create({
           data: {
             name: `Custom ${data.cores} vCPU - ${ramGb}GB RAM - ${ssdGb}GB SSD`,
-            type: 'hourly',
+            type: hasMonthlyPlan ? 'monthly' : 'hourly',
             vcpu: data.cores,
             ram_gb: ramGb,
             ssd_gb: ssdGb,
-            bandwidth_gb: data.bandwidth * 1000,
-            hourly_price: data.hourlyRate,
+            bandwidth_gb: (data.bandwidth || 5) * 1000,
+            hourly_price: hourlyRate,
             monthly_price: monthlyRate,
             is_active: true
           }
@@ -1605,8 +1639,7 @@ async deployVM(userId: number, data: any) {
 
       console.log('Plan found/created:', plan.id);
 
-      // 5. Get or create node in database (for reference only)
-      // The node hostname comes from the location data.location
+      // 7. Get or create node in database
       let node = await prisma.node.findFirst({
         where: { 
           hostname: data.location
@@ -1614,7 +1647,6 @@ async deployVM(userId: number, data: any) {
       });
 
       if (!node) {
-        // Create node record for tracking (not required for deployment, just for reference)
         console.log('Creating node record for:', data.location);
         
         // Get or create default POP
@@ -1641,15 +1673,16 @@ async deployVM(userId: number, data: any) {
             max_ram_gb: 256,
             max_storage_gb: 2000,
             status: 'active',
-            ip_address: '151.158.114.130'
+            ip_address: data.location
           }
         });
       }
 
       console.log('Node found/created:', node.id, node.hostname);
 
-      // 6. Get SSH keys if provided
+      // 8. Get SSH keys if provided
       let sshKeys: any[] = [];
+      let sshKeysString = '';
       if (data.sshKeyId) {
         sshKeys = await prisma.sSHKey.findMany({
           where: {
@@ -1658,24 +1691,29 @@ async deployVM(userId: number, data: any) {
             is_active: true
           }
         });
+        
+        sshKeysString = sshKeys.map(k => {
+          const parts = k.public_key.trim().split(' ');
+          if (parts.length >= 2) {
+            return `${parts[0]} ${parts[1]}`;
+          }
+          return k.public_key;
+        }).join('\n');
       }
 
-      // 7. Get OS template (look for vztmpl or iso based on the OS name)
-      // The OS template comes from the /os-templates API
+      // 9. Get OS template
       const isLXC = data.os?.includes('vztmpl') || data.os?.includes('tar.zst');
-      const contentType = isLXC ? 'vztmpl' : 'iso';
       
-      // Find the template by name or id
       let osTemplate = await prisma.osTemplate.findFirst({
         where: { 
           OR: [
             { name: { contains: data.os, mode: 'insensitive' } },
-            { slug: { contains: data.os, mode: 'insensitive' } }
+            { slug: { contains: data.os, mode: 'insensitive' } },
+            { proxmox_template_id: data.os }
           ]
         }
       });
 
-      // If not in database, create a reference (or use the data directly)
       if (!osTemplate) {
         console.log('Creating OS template reference for:', data.os);
         osTemplate = await prisma.osTemplate.create({
@@ -1694,23 +1732,14 @@ async deployVM(userId: number, data: any) {
 
       console.log('OS Template found/created:', osTemplate.id, osTemplate.name);
 
-      // 8. Deploy VM in Proxmox
-      const sshKeysString = sshKeys.map(k => {
-        const parts = k.public_key.trim().split(' ');
-        if (parts.length >= 2) {
-          return `${parts[0]} ${parts[1]}`;
-        }
-        return k.public_key;
-      }).join('\n');
-
-      // Determine if creating LXC or QEMU VM
-      const isLxcTemplate = data.os?.includes('vztmpl') || data.os?.includes('tar.zst');
-      
+      // 10. Deploy VM in Proxmox
+      const nextVmid = await this.getNextVMID();
       let proxmoxResult;
-      if (isLxcTemplate) {
+      
+      if (isLXC) {
         // Create LXC container
         proxmoxResult = await this.proxmoxService.createLXC(data.location, {
-          vmid: await this.getNextVMID(),
+          vmid: nextVmid,
           hostname: data.hostname,
           cores: data.cores,
           memory: data.memory,
@@ -1722,44 +1751,43 @@ async deployVM(userId: number, data: any) {
           start: 1
         });
       } else {
-        // Create QEMU VM
+        // Check if it's ISO or cloud-init
+        const isISO = data.os?.includes('.iso');
+        
         proxmoxResult = await this.proxmoxService.createQEMU(data.location, {
-          vmid: await this.getNextVMID(),
+          vmid: nextVmid,
           name: data.hostname,
           cores: data.cores,
           memory: data.memory,
           disk: data.disk,
-          iso: data.os,
+          iso: isISO ? data.os : undefined,
+          ostemplate: !isISO ? data.os : undefined,
           sshkeys: sshKeysString,
           password: data.password,
+          hostname: data.hostname,
           storage: 'local-lvm',
           start: 1
         });
       }
 
       console.log('Proxmox VM created:', proxmoxResult);
-// Extract VM ID from the result
-let vmId: number;
-if (typeof proxmoxResult === 'string' && proxmoxResult.includes('UPID:')) {
-  // Parse UPID: UPID:host02-yta:00204D5F:14754853:69D4D6A4:qmcreate:106:root@pam!cloud-ui:
-  const match = proxmoxResult.match(/:qmcreate:(\d+):/);
-  if (match && match[1]) {
-    vmId = parseInt(match[1]);
-  } else {
-    // Fallback: use the vmid we sent
-    vmId = await this.getNextVMID() - 1;
-  }
-} else if (typeof proxmoxResult === 'object' && proxmoxResult.vmid) {
-  vmId = proxmoxResult.vmid;
-} else if (typeof proxmoxResult === 'number') {
-  vmId = proxmoxResult;
-} else {
-  // Fallback: get the next VM ID
-  vmId = await this.getNextVMID() - 1;
-}
 
-console.log('Extracted VM ID:', vmId);
-      // 9. Create VM record in database
+      // 11. Extract VM ID from the result
+      let vmId: number = nextVmid;
+      if (typeof proxmoxResult === 'string' && proxmoxResult.includes('UPID:')) {
+        const match = proxmoxResult.match(/:qmcreate:(\d+):/);
+        if (match && match[1]) {
+          vmId = parseInt(match[1]);
+        }
+      } else if (typeof proxmoxResult === 'object' && proxmoxResult.vmid) {
+        vmId = proxmoxResult.vmid;
+      } else if (typeof proxmoxResult === 'number') {
+        vmId = proxmoxResult;
+      }
+
+      console.log('Extracted VM ID:', vmId);
+
+      // 12. Create VM record in database
       const vm = await prisma.vM.create({
         data: {
           user_id: userId,
@@ -1771,45 +1799,48 @@ console.log('Extracted VM ID:', vmId);
           vcpu: data.cores,
           ram_gb: ramGb,
           ssd_gb: ssdGb,
-          plan_type: 'hourly',
-          status: 'running',
-          hourly_rate: data.hourlyRate,
+          plan_type: hasMonthlyPlan ? 'monthly' : 'hourly',
+          status: 'creating',
+          hourly_rate: hourlyRate,
           monthly_rate: monthlyRate,
           firewall_group_id: data.firewallGroup === 'default' ? null : (parseInt(data.firewallGroup) || null),
           ssh_key_ids: data.sshKeyId ? [parseInt(data.sshKeyId)] : [],
           cloud_init_data: data.userData ? JSON.parse(data.userData) : null,
+          last_billed_at: new Date(),
         }
       });
 
       console.log('VM created in database:', vm.id);
 
-      // 10. Update transaction with VM reference
+      // 13. Update transaction with VM reference
       await prisma.transaction.update({
         where: { id: transaction.id },
         data: {
           ref_id: String(vm.id),
-          description: `VM reservation for ${data.hostname} (VM ID: ${vm.id})`
+          description: `${billingDescription} (VM ID: ${vm.id})`
         }
       });
 
-      // 11. Log activity
+      // 14. Log activity
       await prisma.activityLog.create({
         data: {
           user_id: userId,
           action: 'create',
           action_type: 'create',
-          description: `Deployed VM "${data.hostname}"`,
+          description: `Deployed VM "${data.hostname}" (${cores}vCPU, ${ramGb}GB RAM, ${ssdGb}GB SSD)`,
           service_type: 'vps',
           service_name: data.hostname,
           status: 'success',
           metadata: {
             vm_id: vm.id,
-            proxmox_vmid: proxmoxResult.vmid || proxmoxResult,
+            proxmox_vmid: vmId,
             cores: data.cores,
             memory: data.memory,
             disk: data.disk,
+            hourly_rate: hourlyRate,
             monthly_rate: monthlyRate,
-            hourly_rate: data.hourlyRate
+            deducted_amount: totalDeduction,
+            billing_type: hasMonthlyPlan ? 'monthly' : 'hourly'
           }
         }
       });
@@ -1821,11 +1852,21 @@ console.log('Extracted VM ID:', vmId);
           id: vm.id,
           name: vm.name,
           status: vm.status,
-          vmid: vm.proxmox_vmid
+          vmid: vm.proxmox_vmid,
+          plan_type: vm.plan_type
+        },
+        billing: {
+          type: hasMonthlyPlan ? 'monthly' : 'hourly',
+          hourly_rate: hourlyRate,
+          monthly_rate: monthlyRate,
+          deducted: {
+            required: requiredAmount,
+            buffer: bufferAmount,
+            total: totalDeduction
+          }
         },
         balance: {
           previous: currentBalance,
-          deducted: requiredAmount,
           current: newBalance
         }
       };
@@ -1835,6 +1876,15 @@ console.log('Extracted VM ID:', vmId);
     }
   });
 }
+
+// Helper method to calculate hourly rate
+// private calculateHourlyRate(cores: number, ramGB: number, diskGB: number): number {
+//   const basePrice = 0.12;
+//   const cpuPrice = cores * 0.10;
+//   const ramPrice = ramGB * 0.08;
+//   const diskPrice = diskGB * 0.012;
+//   return parseFloat((basePrice + cpuPrice + ramPrice + diskPrice).toFixed(4));
+// }
 
 // Helper to get next available VMID
 private async getNextVMID(): Promise<number> {
@@ -1847,14 +1897,18 @@ private async getNextVMID(): Promise<number> {
   return nextId;
 }
 
-// Helper method to calculate monthly rate
+// Helper method to calculate monthly rate from data
 private calculateMonthlyRate(data: any): number {
+  const ramGb = data.memory / 1024;
+  const ssdGb = data.disk;
+  const cores = data.cores;
+  
   const basePrice = 0.12;
-  const cpuPrice = data.cores * 0.10;
-  const ramPrice = (data.memory / 1024) * 0.08;
-  const diskPrice = data.disk * 0.012;
+  const cpuPrice = cores * 0.10;
+  const ramPrice = ramGb * 0.08;
+  const diskPrice = ssdGb * 0.012;
   const backupPrice = data.enableBackup ? 0.025 : 0;
-  const locationMultiplier = 1; // Get from location if needed
+  const locationMultiplier = 1;
   
   const hourly = (basePrice + cpuPrice + ramPrice + diskPrice + backupPrice) * locationMultiplier;
   return parseFloat((hourly * 720).toFixed(2));
@@ -1871,17 +1925,76 @@ async checkBalance(userId: number, data: { monthlyCost: number; hourlyRate: numb
   }
 
   const currentBalance = user.wallet_balance.toNumber();
-  const requiredAmount = data.monthlyCost * 1.2; // 20% buffer
+  
+  // Calculate required amounts
+  const hasMonthlyPlan = data.monthlyCost > 0;
+  let requiredAmount: number;
+  
+  if (hasMonthlyPlan) {
+    requiredAmount = data.monthlyCost;
+  } else {
+    requiredAmount = data.hourlyRate * 24; // 24 hours minimum for hourly
+  }
+  
+  const bufferAmount = requiredAmount * 0.2;
+  const totalRequired = requiredAmount + bufferAmount;
 
   return {
-    sufficient: currentBalance >= requiredAmount,
+    sufficient: currentBalance >= totalRequired,
     available: currentBalance,
     required: requiredAmount,
+    buffer: bufferAmount,
+    totalRequired: totalRequired,
     monthlyCost: data.monthlyCost,
     hourlyRate: data.hourlyRate,
-    shortfall: currentBalance >= requiredAmount ? 0 : (requiredAmount - currentBalance)
+    billingType: hasMonthlyPlan ? 'monthly' : 'hourly',
+    shortfall: currentBalance >= totalRequired ? 0 : (totalRequired - currentBalance)
   };
 }
+
+
+
+
+
+
+// Helper to get next available VMID
+
+
+// // Helper method to calculate monthly rate
+// private calculateMonthlyRate(data: any): number {
+//   const basePrice = 0.12;
+//   const cpuPrice = data.cores * 0.10;
+//   const ramPrice = (data.memory / 1024) * 0.08;
+//   const diskPrice = data.disk * 0.012;
+//   const backupPrice = data.enableBackup ? 0.025 : 0;
+//   const locationMultiplier = 1; // Get from location if needed
+  
+//   const hourly = (basePrice + cpuPrice + ramPrice + diskPrice + backupPrice) * locationMultiplier;
+//   return parseFloat((hourly * 720).toFixed(2));
+// }
+
+// // Add check balance method
+// async checkBalance(userId: number, data: { monthlyCost: number; hourlyRate: number }) {
+//   const user = await this.prisma.user.findUnique({
+//     where: { id: userId }
+//   });
+
+//   if (!user) {
+//     throw new NotFoundException('User not found');
+//   }
+
+//   const currentBalance = user.wallet_balance.toNumber();
+//   const requiredAmount = data.monthlyCost * 1.2; // 20% buffer
+
+//   return {
+//     sufficient: currentBalance >= requiredAmount,
+//     available: currentBalance,
+//     required: requiredAmount,
+//     monthlyCost: data.monthlyCost,
+//     hourlyRate: data.hourlyRate,
+//     shortfall: currentBalance >= requiredAmount ? 0 : (requiredAmount - currentBalance)
+//   };
+// }
 
 
 

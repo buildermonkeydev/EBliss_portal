@@ -145,7 +145,6 @@ model LoginHistory {
   @@map("login_history")
 }
 
-// VMs table
 model VM {
   id                Int            @id @default(autoincrement())
   user_id           Int
@@ -169,16 +168,25 @@ model VM {
   suspended_at      DateTime?
   terminated_at     DateTime?
   suspension_reason String?
-  user              User           @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  node              Node           @relation(fields: [node_id], references: [id])
-  firewall_group    FirewallGroup? @relation(fields: [firewall_group_id], references: [id])
-  ip_addresses      IPAddress[]
-  snapshots         VMSnapshot[]
-  vm_metrics        VMMetric[]
-  plan_id           Int?
-  plan              VMPlan?         @relation(fields: [plan_id], references: [id])
-  Plan              Plan?          @relation(fields: [planId], references: [id])
-  planId            Int?
+  
+  // Relations
+  user           User           @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  node           Node           @relation(fields: [node_id], references: [id])
+  firewall_group FirewallGroup? @relation(fields: [firewall_group_id], references: [id])
+  ip_addresses   IPAddress[]
+  snapshots      VMSnapshot[]
+  vm_metrics     VMMetric[]
+  
+  //  SINGLE plan relation - choose ONE of the following:
+  
+  // Option 1: Use Plan (the main plan table)
+  plan_id Int?   //  Keep this
+  plan    Plan?  @relation(fields: [plan_id], references: [id])  //  Keep this
+  
+  // Option 2: Use VMPlan (if you want VM-specific plans)
+  // vm_plan_id Int?
+  // vm_plan    VMPlan? @relation(fields: [vm_plan_id], references: [id])
+
 
   @@map("vms")
 }
@@ -1185,7 +1193,7 @@ model VMPlan {
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  vms VM[]
+
 
   @@index([category])
   @@index([is_active])
