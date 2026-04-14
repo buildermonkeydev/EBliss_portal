@@ -60,7 +60,7 @@ export default function Sidebar() {
   <div className="mb-8 flex flex-col items-center cursor-pointer">
     <div className="relative w-32 h-16 mb-2">
       <Image
-        src="/ChatGPT Image Feb 27, 2026, 10_44_36 AM.png"
+        src="/logo.png"
         alt="eBliss Logo"
         width={500}
         height={100}

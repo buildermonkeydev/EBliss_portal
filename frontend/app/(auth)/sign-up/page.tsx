@@ -239,7 +239,7 @@ export default function RegisterPage() {
               <div className="relative">
                 <div className="absolute inset-0 bg-gradient-to-r from-indigo-500 to-purple-500 rounded-2xl blur-xl opacity-50" />
                 <Image 
-                  src="/ChatGPT Image Feb 27, 2026, 10_44_36 AM.png"
+                  src="/logo.png"
                   alt="eBliss Logo"
                   width={80}
                   height={80}

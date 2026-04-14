@@ -157,7 +157,7 @@ export default function LoginPage() {
             <div className="text-center mb-8">
               <div className="inline-flex items-center justify-center w-24 h-24 mb-4">
                 <Image 
-                  src="/ChatGPT Image Feb 27, 2026, 10_44_36 AM.png"
+                  src="/logo.png"
                   alt="eBliss Logo"
                   width={96}
                   height={96}
